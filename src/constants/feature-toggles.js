@@ -1,7 +1,7 @@
 const defaultFeatureToggles = {
     callHandling: {
         appointmentBooking: { enabled: true },
-        depositCollection: { enabled: true, amount: 25, paymentWindowHours: 24 },
+        depositCollection: { enabled: true, amount: 25, amountType: 'fixed', paymentWindowHours: 24 },
         waitlistManagement: { enabled: true },
         urgentCallRouting: {
             enabled: true,
@@ -27,7 +27,7 @@ const defaultFeatureToggles = {
     businessConfiguration: {
         customVoice: { enabled: false, mode: 'standard' },
         multiLanguageSupport: { enabled: false, languages: ['English'] },
-        customHoldMusic: { enabled: false },
+        customHoldMusic: { enabled: false, trackUrl: '' },
         personalisedGreetingScript: {
             enabled: true,
             openingLine: 'Thanks for calling. How can I help you today?'
