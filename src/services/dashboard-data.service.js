@@ -1164,25 +1164,20 @@ const getDailySummaryHistory = async ({ actor, date, startDate, endDate, limit =
 
 const getKnowledgeBaseEntries = async ({ actor } = {}) => {
     const where = actor?.id ? { userId: actor.id } : undefined;
-    const [entries, attachments] = await Promise.all([
-        KnowledgeBaseEntry.findAll({ where, order: [['createdAt', 'DESC']] }),
-        KnowledgeBaseAttachment.findAll()
-    ]);
-
-    const attachmentMap = new Map(attachments.map((attachment) => [attachment.knowledgeBaseEntryId, attachment]));
+    const entries = await KnowledgeBaseEntry.findAll({ where, order: [['createdAt', 'DESC']] });
 
     return entries.map((entry) => ({
         id: String(entry.id),
         title: entry.title,
         content: entry.content,
         category: entry.category,
-        attachmentName: attachmentMap.get(entry.id)?.fileName || '',
-        attachmentDataUrl: attachmentMap.get(entry.id)?.fileDataUrl || ''
+        attachmentName: '',
+        attachmentDataUrl: ''
     }));
 };
 
 const createKnowledgeBaseEntry = async (payload) => {
-    const { title, content, category, attachmentName, attachmentDataUrl } = payload;
+    const { title, content, category } = payload;
 
     const entry = await KnowledgeBaseEntry.create({
         title,
@@ -1191,21 +1186,13 @@ const createKnowledgeBaseEntry = async (payload) => {
         userId: payload?.actor?.id || null
     });
 
-    if (attachmentName || attachmentDataUrl) {
-        await KnowledgeBaseAttachment.create({
-            knowledgeBaseEntryId: entry.id,
-            fileName: attachmentName || '',
-            fileDataUrl: attachmentDataUrl || ''
-        });
-    }
-
     return {
         id: String(entry.id),
         title: entry.title,
         content: entry.content,
         category: entry.category,
-        attachmentName: attachmentName || '',
-        attachmentDataUrl: attachmentDataUrl || ''
+        attachmentName: '',
+        attachmentDataUrl: ''
     };
 };
 

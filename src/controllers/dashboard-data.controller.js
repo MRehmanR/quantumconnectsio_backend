@@ -113,6 +113,10 @@ exports.createKnowledgeBaseEntry = async (req, res) => {
             return res.status(400).json({ success: false, message: 'title, content and category are required' });
         }
 
+        if (attachmentName || attachmentDataUrl) {
+            return res.status(400).json({ success: false, message: 'File uploads are not supported. Please add text only.' });
+        }
+
         const data = await dashboardDataService.createKnowledgeBaseEntry({
             title,
             content,
