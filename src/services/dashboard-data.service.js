@@ -1,3 +1,5 @@
+const https = require('https');
+const { URL } = require('url');
 const { Op } = require('sequelize');
 const Stripe = require('stripe');
 const {
@@ -23,7 +25,10 @@ const {
     AUTOMATION_SHARED_KEY,
     BILLING_PORTAL_URL,
     FRONTEND_APP_URL,
-    STRIPE_SECRET_KEY
+    STRIPE_SECRET_KEY,
+    RETELL_API_KEY,
+    RETELL_API_BASE_URL,
+    RETELL_UPDATE_AGENT_PATH
 } = require('../config/env');
 const { normalizePhone } = require('../utils/phone');
 
@@ -75,6 +80,106 @@ const safeJsonParse = (value, fallback) => {
     } catch {
         return fallback;
     }
+};
+
+const requestJson = ({ method, url, headers = {}, body }) =>
+    new Promise((resolve, reject) => {
+        const parsed = new URL(url);
+        const payload = body ? JSON.stringify(body) : null;
+
+        const req = https.request(
+            {
+                method,
+                hostname: parsed.hostname,
+                path: `${parsed.pathname}${parsed.search}`,
+                protocol: parsed.protocol,
+                port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
+                    ...headers
+                }
+            },
+            (res) => {
+                let data = '';
+                res.on('data', (chunk) => {
+                    data += chunk;
+                });
+                res.on('end', () => {
+                    let parsedBody = null;
+                    try {
+                        parsedBody = data ? JSON.parse(data) : null;
+                    } catch (_error) {
+                        parsedBody = data || null;
+                    }
+
+                    if (res.statusCode >= 200 && res.statusCode < 300) {
+                        resolve(parsedBody);
+                    } else {
+                        reject(
+                            new Error(
+                                `HTTP ${res.statusCode} ${res.statusMessage || ''} ${
+                                    typeof parsedBody === 'string' ? parsedBody : JSON.stringify(parsedBody || {})
+                                }`
+                            )
+                        );
+                    }
+                });
+            }
+        );
+
+        req.on('error', reject);
+        if (payload) {
+            req.write(payload);
+        }
+        req.end();
+    });
+
+const updateRetellAgentVoice = async ({ agentId, voiceId }) => {
+    const apiKey = String(RETELL_API_KEY || '').trim();
+    if (!apiKey) {
+        throw new Error('Retell is missing RETELL_API_KEY. Configure it in backend .env.');
+    }
+
+    const baseUrl = String(RETELL_API_BASE_URL || 'https://api.retellai.com').trim().replace(/\/$/, '');
+    const configuredPath = String(RETELL_UPDATE_AGENT_PATH || '/update-agent').trim();
+    const normalizedConfiguredPath = configuredPath.startsWith('/') ? configuredPath : `/${configuredPath}`;
+
+    const requestPlans = [
+        {
+            method: 'POST',
+            url: `${baseUrl}${normalizedConfiguredPath}`,
+            body: { agent_id: agentId, voice_id: voiceId }
+        },
+        {
+            method: 'PATCH',
+            url: `${baseUrl}/v2/agents/${encodeURIComponent(agentId)}`,
+            body: { voice_id: voiceId }
+        }
+    ];
+
+    let lastError = null;
+    for (const plan of requestPlans) {
+        try {
+            return await requestJson({
+                method: plan.method,
+                url: plan.url,
+                headers: {
+                    Authorization: `Bearer ${apiKey}`
+                },
+                body: plan.body
+            });
+        } catch (error) {
+            lastError = error;
+            const message = String(error?.message || '');
+            const isNotFound = message.includes('HTTP 404') || message.includes('Cannot');
+            if (!isNotFound) {
+                throw error;
+            }
+        }
+    }
+
+    throw lastError || new Error('Failed to update Retell agent voice');
 };
 
 const ensureSubscriptionPlans = async () => {
@@ -627,8 +732,19 @@ const updateAiReceptionistConfig = async ({ actor, payload }) => {
         throw new Error('User not found');
     }
 
-    user.receptionistName = String(payload?.name || user.receptionistName || 'Aria').trim() || 'Aria';
-    user.receptionistVoice = String(payload?.voice || user.receptionistVoice || 'Aria').trim() || 'Aria';
+    const nextName = String(payload?.name || user.receptionistName || 'Aria').trim() || 'Aria';
+    const nextVoice = String(payload?.voice || user.receptionistVoice || 'Aria').trim() || 'Aria';
+    const voiceChanged = Boolean(payload?.voice) && nextVoice !== String(user.receptionistVoice || 'Aria');
+
+    if (voiceChanged) {
+        if (!user.retellAgentId) {
+            throw new Error('Retell agent is not connected yet. Provision the agent before changing voice.');
+        }
+        await updateRetellAgentVoice({ agentId: user.retellAgentId, voiceId: nextVoice });
+    }
+
+    user.receptionistName = nextName;
+    user.receptionistVoice = nextVoice;
     user.receptionistCustomGreeting = String(payload?.customGreeting || user.receptionistCustomGreeting || '').trim();
 
     const nextStatus = String(payload?.status || user.receptionistStatus || 'paused').toLowerCase();

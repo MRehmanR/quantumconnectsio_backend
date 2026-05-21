@@ -31,6 +31,7 @@ module.exports = {
     RETELL_API_KEY: process.env.RETELL_API_KEY || '',
     RETELL_API_BASE_URL: process.env.RETELL_API_BASE_URL || 'https://api.retellai.com',
     RETELL_CREATE_AGENT_PATH: process.env.RETELL_CREATE_AGENT_PATH || '/create-agent',
+    RETELL_UPDATE_AGENT_PATH: process.env.RETELL_UPDATE_AGENT_PATH || '/update-agent',
     RETELL_AGENT_TEMPLATE_ID: process.env.RETELL_AGENT_TEMPLATE_ID || '',
     RETELL_VOICE_ID: process.env.RETELL_VOICE_ID || '',
     RETELL_RESPONSE_ENGINE_TYPE: process.env.RETELL_RESPONSE_ENGINE_TYPE || 'retell-llm',
