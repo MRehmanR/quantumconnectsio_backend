@@ -25,9 +25,11 @@ router.delete('/knowledge-base/:id', authenticate, requireActiveSubscription, da
 router.get('/feature-toggles', authenticate, dashboardDataController.getFeatureToggles);
 router.put('/feature-toggles', authenticate, requireActiveSubscription, dashboardDataController.updateFeatureToggles);
 router.get('/ai-receptionist/config', authenticate, dashboardDataController.getAiReceptionistConfig);
+router.get('/ai-receptionist/preview-voice', authenticate, requireActiveSubscription, dashboardDataController.previewAiReceptionistVoice);
 router.put('/ai-receptionist/config', authenticate, requireActiveSubscription, dashboardDataController.updateAiReceptionistConfig);
 router.get('/billing', authenticate, dashboardDataController.getBilling);
 router.post('/billing/purchase', authenticate, dashboardDataController.purchasePlan);
+router.post('/billing/stripe/webhook', dashboardDataController.handleStripeWebhook);
 router.post('/billing/checkout/session', authenticate, dashboardDataController.createStripeCheckoutSession);
 router.post('/billing/checkout/confirm', authenticate, dashboardDataController.confirmStripeCheckoutSession);
 router.get('/billing/payment-method/update-url', authenticate, dashboardDataController.getPaymentMethodUpdateUrl);

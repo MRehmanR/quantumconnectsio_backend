@@ -2,6 +2,8 @@ const express = require('express');
 const {
     login,
     register,
+    forgotPassword,
+    resetPassword,
     provisionBusinessNumber,
     getAvailableBusinessNumbers,
     provisionRetellVoiceAgent,
@@ -15,6 +17,8 @@ const router = express.Router();
 router.post('/login', login);
 router.post('/register', register);
 router.post('/signup', register);
+router.post('/forgot-password', forgotPassword);
+router.post('/reset-password', resetPassword);
 router.get('/available-numbers', authenticate, requireActiveSubscription, getAvailableBusinessNumbers);
 router.post('/import-website-knowledge', authenticate, requireActiveSubscription, importWebsiteKnowledgeBase);
 router.post('/provision-number', authenticate, requireActiveSubscription, provisionBusinessNumber);

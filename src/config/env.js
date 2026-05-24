@@ -46,6 +46,14 @@ module.exports = {
     N8N_MANUAL_APPOINTMENT_WEBHOOK_URL: process.env.N8N_MANUAL_APPOINTMENT_WEBHOOK_URL || '',
     BILLING_PORTAL_URL: process.env.BILLING_PORTAL_URL || '',
     FRONTEND_APP_URL: process.env.FRONTEND_APP_URL || 'http://localhost:8080',
+    RESET_PASSWORD_TOKEN_TTL_MIN: Number(process.env.RESET_PASSWORD_TOKEN_TTL_MIN || 60),
+    SMTP_HOST: process.env.SMTP_HOST || '',
+    SMTP_PORT: Number(process.env.SMTP_PORT || 587),
+    SMTP_SECURE: process.env.SMTP_SECURE || 'false',
+    SMTP_USER: process.env.SMTP_USER || '',
+    SMTP_PASS: process.env.SMTP_PASS || '',
+    SMTP_FROM: process.env.SMTP_FROM || '',
     STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY || '',
-    STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET || ''
+    STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET || '',
+    STRIPE_CURRENCY: process.env.STRIPE_CURRENCY || 'gbp'
 };

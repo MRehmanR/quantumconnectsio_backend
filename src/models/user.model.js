@@ -180,6 +180,16 @@ const User = sequelize.define(
             type: DataTypes.TEXT,
             allowNull: false,
             defaultValue: '{}'
+        },
+        resetPasswordTokenHash: {
+            type: DataTypes.STRING,
+            allowNull: true,
+            defaultValue: null
+        },
+        resetPasswordExpiresAt: {
+            type: DataTypes.DATE,
+            allowNull: true,
+            defaultValue: null
         }
     },
     {

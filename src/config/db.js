@@ -178,6 +178,20 @@ const ensureSchemaColumns = async () => {
             defaultValue: '{}'
         });
     }
+    if (!usersTable.resetPasswordTokenHash) {
+        await queryInterface.addColumn('users', 'resetPasswordTokenHash', {
+            type: Sequelize.STRING,
+            allowNull: true,
+            defaultValue: null
+        });
+    }
+    if (!usersTable.resetPasswordExpiresAt) {
+        await queryInterface.addColumn('users', 'resetPasswordExpiresAt', {
+            type: Sequelize.DATE,
+            allowNull: true,
+            defaultValue: null
+        });
+    }
 
     const invoicesTable = await queryInterface.describeTable('invoices');
     if (!invoicesTable.paymentReference) {

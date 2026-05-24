@@ -5,11 +5,17 @@ const ok = (res, data) => res.status(200).json({ success: true, data });
 exports.getDashboardOverview = async (req, res) => {
     try {
         const data = await dashboardDataService.getDashboardOverview({
-            actor: req.user
+            actor: req.user,
+            range: req.query?.range,
+            startDate: req.query?.startDate,
+            endDate: req.query?.endDate
         });
         return ok(res, data);
     } catch (error) {
-        return res.status(500).json({ success: false, message: 'Failed to fetch dashboard overview' });
+        if (error.code === 'INVALID_DATE_RANGE') {
+            return res.status(400).json({ success: false, message: error.message });
+        }
+        return res.status(500).json({ success: false, message: error.message || 'Failed to fetch dashboard overview' });
     }
 };
 
@@ -156,7 +162,11 @@ exports.createAppointment = async (req, res) => {
 
         return res.status(201).json({ success: true, data });
     } catch (error) {
-        if (error.code === 'INVALID_TIME_FORMAT') {
+        if (error.code === 'INVALID_TIME_FORMAT' || error.code === 'INVALID_DATE_FORMAT') {
+            return res.status(400).json({ success: false, message: error.message });
+        }
+
+        if (error.code === 'PAST_DATE_NOT_ALLOWED') {
             return res.status(400).json({ success: false, message: error.message });
         }
 
@@ -194,7 +204,7 @@ exports.getAppointmentAvailability = async (req, res) => {
 
         return ok(res, data);
     } catch (error) {
-        if (error.code === 'TENANT_NOT_FOUND') {
+        if (error.code === 'TENANT_NOT_FOUND' || error.code === 'INVALID_DATE_FORMAT' || error.code === 'PAST_DATE_NOT_ALLOWED') {
             return res.status(400).json({ success: false, message: error.message });
         }
         return res.status(500).json({ success: false, message: 'Failed to fetch appointment availability' });
@@ -277,7 +287,7 @@ exports.rescheduleAppointment = async (req, res) => {
 
         return res.status(200).json({ success: true, data });
     } catch (error) {
-        if (error.code === 'TENANT_NOT_FOUND') {
+        if (error.code === 'TENANT_NOT_FOUND' || error.code === 'INVALID_TIME_FORMAT' || error.code === 'INVALID_DATE_FORMAT' || error.code === 'PAST_DATE_NOT_ALLOWED') {
             return res.status(400).json({ success: false, message: error.message });
         }
         return res.status(500).json({ success: false, message: 'Failed to reschedule appointment' });
@@ -365,6 +375,26 @@ exports.getAiReceptionistConfig = async (req, res) => {
     }
 };
 
+exports.previewAiReceptionistVoice = async (req, res) => {
+    try {
+        const voice = String(req.query.voice || '').trim();
+        if (!voice) {
+            return res.status(400).json({ success: false, message: 'voice query param is required' });
+        }
+
+        const { RETELL_API_KEY } = require('../config/env');
+        if (!RETELL_API_KEY) {
+            return res.status(501).json({ success: false, message: 'Voice preview requires RETELL integration enabled on the backend. Configure RETELL_API_KEY in .env.' });
+        }
+
+        // If RETELL is configured we would proxy a TTS preview here.
+        // Implementation depends on Retell's TTS API. For now, return not implemented.
+        return res.status(501).json({ success: false, message: 'Voice preview is not implemented on the server yet.' });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: 'Failed to generate voice preview' });
+    }
+};
+
 exports.updateAiReceptionistConfig = async (req, res) => {
     try {
         const data = await dashboardDataService.updateAiReceptionistConfig({
@@ -410,6 +440,26 @@ exports.purchasePlan = async (req, res) => {
         return res.status(201).json({ success: true, data });
     } catch (error) {
         return res.status(400).json({ success: false, message: error.message || 'Failed to purchase plan' });
+    }
+};
+
+exports.handleStripeWebhook = async (req, res) => {
+    try {
+        const signatureHeader = req.headers['stripe-signature'];
+        const signature = Array.isArray(signatureHeader) ? signatureHeader[0] : signatureHeader;
+        const data = await dashboardDataService.processStripeWebhook({
+            rawBody: req.rawBody || '',
+            signature
+        });
+        return res.status(200).json({ success: true, data });
+    } catch (error) {
+        if (error.code === 'STRIPE_WEBHOOK_SIGNATURE_REQUIRED' || error.code === 'STRIPE_WEBHOOK_SIGNATURE_INVALID') {
+            return res.status(400).json({ success: false, message: error.message });
+        }
+        if (error.code === 'STRIPE_NOT_CONFIGURED' || error.code === 'STRIPE_WEBHOOK_NOT_CONFIGURED') {
+            return res.status(503).json({ success: false, message: error.message });
+        }
+        return res.status(500).json({ success: false, message: error.message || 'Failed to process Stripe webhook' });
     }
 };
 

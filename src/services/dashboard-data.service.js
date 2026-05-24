@@ -26,6 +26,8 @@ const {
     BILLING_PORTAL_URL,
     FRONTEND_APP_URL,
     STRIPE_SECRET_KEY,
+    STRIPE_WEBHOOK_SECRET,
+    STRIPE_CURRENCY,
     RETELL_API_KEY,
     RETELL_API_BASE_URL,
     RETELL_UPDATE_AGENT_PATH
@@ -43,6 +45,15 @@ const defaultPlans = [
 ];
 
 let stripeClient = null;
+
+const normalizeStripeCurrency = (value, fallback = 'gbp') => {
+    const safeValue = String(value || fallback)
+        .trim()
+        .toLowerCase();
+    return /^[a-z]{3}$/.test(safeValue) ? safeValue : fallback;
+};
+
+const DEFAULT_STRIPE_CURRENCY = normalizeStripeCurrency(STRIPE_CURRENCY, 'gbp');
 
 const formatDuration = (durationSeconds) => {
     const mins = Math.floor(durationSeconds / 60);
@@ -62,7 +73,7 @@ const serializeAppointmentDeposit = (appointment) => ({
     status: appointment.depositStatus || 'None',
     requiredAmount: Number(appointment.depositRequiredAmount || 0),
     paidAmount: Number(appointment.depositPaidAmount || 0),
-    currency: String(appointment.depositCurrency || 'usd').toUpperCase(),
+    currency: String(appointment.depositCurrency || DEFAULT_STRIPE_CURRENCY).toUpperCase(),
     paymentUrl: appointment.depositCheckoutUrl || '',
     checkoutSessionId: appointment.depositCheckoutSessionId || '',
     requestedAt: appointment.depositRequestedAt || null,
@@ -220,6 +231,33 @@ const getStripeClient = () => {
     return stripeClient;
 };
 
+const buildStripeWebhookEvent = ({ rawBody, signature }) => {
+    const safeSignature = String(signature || '').trim();
+    if (!safeSignature) {
+        const signatureError = new Error('Missing Stripe signature header.');
+        signatureError.code = 'STRIPE_WEBHOOK_SIGNATURE_REQUIRED';
+        throw signatureError;
+    }
+
+    const webhookSecret = String(STRIPE_WEBHOOK_SECRET || '').trim();
+    if (!webhookSecret) {
+        const webhookConfigError = new Error('Stripe webhook is not configured. Set STRIPE_WEBHOOK_SECRET in backend .env.');
+        webhookConfigError.code = 'STRIPE_WEBHOOK_NOT_CONFIGURED';
+        throw webhookConfigError;
+    }
+
+    const stripe = getStripeClient();
+    const payload = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8');
+
+    try {
+        return stripe.webhooks.constructEvent(payload, safeSignature, webhookSecret);
+    } catch {
+        const invalidSignatureError = new Error('Invalid Stripe webhook signature.');
+        invalidSignatureError.code = 'STRIPE_WEBHOOK_SIGNATURE_INVALID';
+        throw invalidSignatureError;
+    }
+};
+
 const getFrontendBaseUrl = (origin) => {
     const originValue = String(origin || '').trim();
     if (originValue.startsWith('http://') || originValue.startsWith('https://')) {
@@ -369,6 +407,54 @@ const parseTimeToMinutes = (timeValue) => {
     }
 
     return null;
+};
+
+const parseDateOnly = (dateValue) => {
+    const raw = String(dateValue || '').trim();
+    const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) {
+        return null;
+    }
+
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const date = new Date(year, month - 1, day);
+    if (Number.isNaN(date.getTime())) {
+        return null;
+    }
+
+    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+        return null;
+    }
+
+    return date;
+};
+
+const buildLocalDateTime = (dateValue, minutes) => {
+    const dateOnly = parseDateOnly(dateValue);
+    if (!dateOnly || minutes === null || Number.isNaN(minutes)) {
+        return null;
+    }
+
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return new Date(dateOnly.getFullYear(), dateOnly.getMonth(), dateOnly.getDate(), hours, mins, 0, 0);
+};
+
+const assertAppointmentNotInPast = (dateValue, minutes) => {
+    const dateTime = buildLocalDateTime(dateValue, minutes);
+    if (!dateTime) {
+        const invalidDateError = new Error('Invalid appointment date format. Use YYYY-MM-DD.');
+        invalidDateError.code = 'INVALID_DATE_FORMAT';
+        throw invalidDateError;
+    }
+
+    if (dateTime < new Date()) {
+        const pastDateError = new Error('Appointment time must be in the future.');
+        pastDateError.code = 'PAST_DATE_NOT_ALLOWED';
+        throw pastDateError;
+    }
 };
 
 const formatMinutesToHHmm = (totalMinutes) => {
@@ -836,21 +922,47 @@ const triggerManualAppointmentNotification = async ({
     }
 };
 
-const buildDailyPerformance = (calls, appointments) => {
-    const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const resolvePerformanceWindow = ({ range, startDate, endDate }) => {
+    const normalizedRange = String(range || 'weekly').trim().toLowerCase();
     const now = new Date();
-    const buckets = [];
+    const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const start = new Date(end);
 
-    for (let offset = 6; offset >= 0; offset -= 1) {
-        const d = new Date(now);
-        d.setDate(now.getDate() - offset);
+    if (normalizedRange === 'monthly') {
+        start.setDate(end.getDate() - 29);
+        return { start, end };
+    }
+
+    if (normalizedRange === 'custom') {
+        const parsedStart = parseDateOnly(startDate);
+        const parsedEnd = parseDateOnly(endDate);
+        if (!parsedStart || !parsedEnd || parsedStart > parsedEnd) {
+            const error = new Error('Invalid custom range. Provide startDate and endDate in YYYY-MM-DD format.');
+            error.code = 'INVALID_DATE_RANGE';
+            throw error;
+        }
+        return { start: parsedStart, end: parsedEnd };
+    }
+
+    start.setDate(end.getDate() - 6);
+    return { start, end };
+};
+
+const buildDailyPerformance = (calls, appointments, { start, end }) => {
+    const buckets = [];
+    const dayCursor = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+    const safeEnd = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+
+    while (dayCursor <= safeEnd) {
+        const d = new Date(dayCursor);
         buckets.push({
             key: d.toISOString().slice(0, 10),
-            date: dayLabels[d.getDay()],
+            date: d.toLocaleDateString('en-US', { month: 'short', day: '2-digit' }),
             calls: 0,
             bookings: 0,
             revenue: 0
         });
+        dayCursor.setDate(dayCursor.getDate() + 1);
     }
 
     const lookup = new Map(buckets.map((item) => [item.key, item]));
@@ -886,7 +998,7 @@ const buildDailyPerformance = (calls, appointments) => {
     }));
 };
 
-const getDashboardOverview = async ({ actor } = {}) => {
+const getDashboardOverview = async ({ actor, range = 'weekly', startDate = '', endDate = '' } = {}) => {
     const isAdmin = actor?.role === 'admin';
     const whereForCalls = {};
     const whereForAppointments = {};
@@ -963,7 +1075,8 @@ const getDashboardOverview = async ({ actor } = {}) => {
         preview: String(entry.content || '').replace(/\s+/g, ' ').trim().slice(0, 260)
     }));
 
-    const dailyPerformance = buildDailyPerformance(calls, appointments);
+    const performanceWindow = resolvePerformanceWindow({ range, startDate, endDate });
+    const dailyPerformance = buildDailyPerformance(calls, appointments, performanceWindow);
 
     return {
         callsUsed,
@@ -1353,6 +1466,8 @@ const createAppointment = async ({ customerName, customerPhone, customerEmail, d
         throw invalidTimeError;
     }
 
+    assertAppointmentNotInPast(date, requestedMinutes);
+
     const bookedSlotSet = await getBookedSlotSetForDate(date, tenantUser?.id);
     if (bookedSlotSet.has(requestedMinutes)) {
         const allSlots = generateDailySlots({});
@@ -1459,6 +1574,21 @@ const getAppointmentAvailability = async ({ date, tenantEmail, dialedNumber, own
     const tenantUser = await resolveTenantUserForOperation({ actor, tenantEmail, dialedNumber, ownerPhone });
     ensureTenantForAutomation({ actor, tenantUser });
     const targetDate = date || new Date().toISOString().slice(0, 10);
+
+    const targetDateOnly = parseDateOnly(targetDate);
+    if (!targetDateOnly) {
+        const invalidDateError = new Error('Invalid appointment date format. Use YYYY-MM-DD.');
+        invalidDateError.code = 'INVALID_DATE_FORMAT';
+        throw invalidDateError;
+    }
+
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    if (targetDateOnly < todayStart) {
+        const pastDateError = new Error('Appointment date must be today or later.');
+        pastDateError.code = 'PAST_DATE_NOT_ALLOWED';
+        throw pastDateError;
+    }
 
     if (tenantUser && !isReceptionistActiveForUser(tenantUser)) {
         return {
@@ -1620,8 +1750,17 @@ const rescheduleAppointment = async ({ appointmentId, date, time, tenantEmail, d
         return null;
     }
 
+    const requestedMinutes = parseTimeToMinutes(time);
+    if (requestedMinutes === null) {
+        const invalidTimeError = new Error('Invalid appointment time format');
+        invalidTimeError.code = 'INVALID_TIME_FORMAT';
+        throw invalidTimeError;
+    }
+
+    assertAppointmentNotInPast(date, requestedMinutes);
+
     appointment.appointmentDate = date || appointment.appointmentDate;
-    appointment.appointmentTime = time || appointment.appointmentTime;
+    appointment.appointmentTime = formatMinutesToHHmm(requestedMinutes);
     appointment.status = 'Pending';
     await appointment.save();
 
@@ -1657,7 +1796,7 @@ const createAppointmentDepositCheckoutSession = async ({
     amount,
     totalAmount,
     percentage = 30,
-    currency = 'usd',
+    currency = DEFAULT_STRIPE_CURRENCY,
     tenantEmail,
     dialedNumber,
     ownerPhone,
@@ -1692,7 +1831,7 @@ const createAppointmentDepositCheckoutSession = async ({
         throw invalidAmountError;
     }
 
-    const safeCurrency = String(currency || 'usd').trim().toLowerCase();
+    const safeCurrency = normalizeStripeCurrency(currency, DEFAULT_STRIPE_CURRENCY);
     const stripe = getStripeClient();
     const frontendBase = getFrontendBaseUrl(origin);
     const contact = await AppointmentContact.findOne({ where: { appointmentId: appointment.id } });
@@ -1823,7 +1962,7 @@ const refreshAppointmentDepositStatus = async ({ appointmentId, tenantEmail, dia
                     appointmentId: appointment.id,
                     userId: appointment.userId,
                     amount: Number(appointment.depositPaidAmount || 0),
-                    currency: String(appointment.depositCurrency || 'usd').toUpperCase(),
+                    currency: String(appointment.depositCurrency || DEFAULT_STRIPE_CURRENCY).toUpperCase(),
                     checkoutSessionId: appointment.depositCheckoutSessionId,
                     paymentStatus
                 },
@@ -1841,7 +1980,7 @@ const refreshAppointmentDepositStatus = async ({ appointmentId, tenantEmail, dia
                 previousStatus: previousDepositStatus,
                 extraPayload: {
                     depositAmount: Number(appointment.depositPaidAmount || 0),
-                    depositCurrency: String(appointment.depositCurrency || 'usd').toUpperCase(),
+                    depositCurrency: String(appointment.depositCurrency || DEFAULT_STRIPE_CURRENCY).toUpperCase(),
                     depositPaymentUrl: appointment.depositCheckoutUrl || '',
                     depositCheckoutSessionId: appointment.depositCheckoutSessionId || ''
                 }
@@ -1983,12 +2122,12 @@ const createStripeCheckoutSession = async ({ email, planName, actor, origin }) =
         line_items: [
             {
                 price_data: {
-                    currency: 'usd',
+                    currency: DEFAULT_STRIPE_CURRENCY,
                     product_data: {
                         name: `${plan.name} Plan`,
                         description: `${plan.callsLimit} calls per month`
                     },
-                    unit_amount: Number(plan.price) * 100
+                    unit_amount: Math.round(Number(plan.price) * 100)
                 },
                 quantity: 1
             }
@@ -2060,6 +2199,73 @@ const confirmStripeCheckoutSession = async ({ sessionId, email, actor }) => {
         ...purchaseResult,
         sessionId: safeSessionId,
         paymentStatus: session.payment_status
+    };
+};
+
+const processStripeCheckoutSessionWebhook = async ({ session, eventType }) => {
+    if (!session || session.object !== 'checkout.session') {
+        return;
+    }
+
+    const metadata = session.metadata || {};
+    const paymentType = String(metadata.paymentType || '').trim().toLowerCase();
+
+    if (paymentType === 'appointment_deposit') {
+        const appointmentId = String(metadata.appointmentId || '').trim();
+        if (!appointmentId) {
+            return;
+        }
+
+        if (eventType === 'checkout.session.completed' || eventType === 'checkout.session.async_payment_succeeded') {
+            const appointment = await Appointment.findByPk(Number(appointmentId));
+            const actor = appointment?.userId ? { id: appointment.userId } : undefined;
+            await refreshAppointmentDepositStatus({ appointmentId, actor });
+            return;
+        }
+
+        if (eventType === 'checkout.session.async_payment_failed' || eventType === 'checkout.session.expired') {
+            const appointment = await Appointment.findByPk(Number(appointmentId));
+            if (!appointment || appointment.depositStatus === 'Paid') {
+                return;
+            }
+
+            appointment.depositStatus = 'Failed';
+            await appointment.save();
+        }
+
+        return;
+    }
+
+    const planName = String(metadata.planName || '').trim();
+    if (!planName) {
+        return;
+    }
+
+    if (eventType === 'checkout.session.completed' || eventType === 'checkout.session.async_payment_succeeded') {
+        const metadataUserId = Number(metadata.userId || 0);
+        const actor = metadataUserId > 0 ? { id: metadataUserId } : undefined;
+        await confirmStripeCheckoutSession({
+            sessionId: session.id,
+            email: String(metadata.userEmail || ''),
+            actor
+        });
+    }
+};
+
+const processStripeWebhook = async ({ rawBody, signature }) => {
+    const event = buildStripeWebhookEvent({ rawBody, signature });
+    const eventType = String(event.type || '').trim();
+
+    if (eventType.startsWith('checkout.session.')) {
+        await processStripeCheckoutSessionWebhook({
+            session: event.data?.object,
+            eventType
+        });
+    }
+
+    return {
+        received: true,
+        eventType
     };
 };
 
@@ -2309,6 +2515,7 @@ module.exports = {
     purchasePlan,
     createStripeCheckoutSession,
     confirmStripeCheckoutSession,
+    processStripeWebhook,
     getPaymentMethodUpdateUrl,
     getReferralOverview,
     getAdminOverview,

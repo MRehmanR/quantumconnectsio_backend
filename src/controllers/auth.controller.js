@@ -181,3 +181,41 @@ exports.login = async (req, res) => {
         return res.status(401).json({ success: false, message: error.message });
     }
 };
+
+exports.forgotPassword = async (req, res) => {
+    try {
+        const { email } = req.body;
+
+        if (!email) {
+            return res.status(400).json({ success: false, message: 'email is required' });
+        }
+
+        await authService.requestPasswordReset(email);
+
+        return res.status(200).json({
+            success: true,
+            message: 'If an account exists for this email, a reset link has been sent.'
+        });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: error.message || 'Failed to send reset email' });
+    }
+};
+
+exports.resetPassword = async (req, res) => {
+    try {
+        const { email, token, password } = req.body;
+
+        if (!email || !token || !password) {
+            return res.status(400).json({ success: false, message: 'email, token and password are required' });
+        }
+
+        await authService.resetPassword({ email, token, password });
+
+        return res.status(200).json({
+            success: true,
+            message: 'Password updated successfully'
+        });
+    } catch (error) {
+        return res.status(400).json({ success: false, message: error.message || 'Failed to reset password' });
+    }
+};

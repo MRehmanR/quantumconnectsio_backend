@@ -1,10 +1,13 @@
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { Op } = require('sequelize');
 const User = require('../models/user.model');
 const Invoice = require('../models/invoice.model');
 const { generateToken } = require('../utils/jwt');
 const provisioningService = require('./provisioning.service');
 const { normalizePhone } = require('../utils/phone');
+const { FRONTEND_APP_URL, RESET_PASSWORD_TOKEN_TTL_MIN } = require('../config/env');
+const { sendPasswordResetEmail } = require('../utils/email');
 
 const generateReferralCode = (username) => {
     const normalized = String(username || 'user')
@@ -256,6 +259,50 @@ const authService = {
         });
 
         return data;
+    },
+
+    requestPasswordReset: async (email) => {
+        const user = await User.unscoped().findOne({ where: { email } });
+        if (!user) {
+            return { sent: true };
+        }
+
+        const token = crypto.randomBytes(32).toString('hex');
+        const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+        const expiresAt = new Date(Date.now() + RESET_PASSWORD_TOKEN_TTL_MIN * 60 * 1000);
+
+        user.resetPasswordTokenHash = tokenHash;
+        user.resetPasswordExpiresAt = expiresAt;
+        await user.save();
+
+        const resetUrl = `${FRONTEND_APP_URL}/reset-password?token=${token}&email=${encodeURIComponent(email)}`;
+        await sendPasswordResetEmail({ to: email, resetUrl });
+
+        return { sent: true };
+    },
+
+    resetPassword: async ({ email, token, password }) => {
+        if (!password || String(password).length < 8) {
+            throw new Error('Password must be at least 8 characters long');
+        }
+
+        const user = await User.unscoped().findOne({ where: { email } });
+        if (!user || !user.resetPasswordTokenHash || !user.resetPasswordExpiresAt) {
+            throw new Error('Invalid or expired reset link');
+        }
+
+        const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+        if (tokenHash !== user.resetPasswordTokenHash || new Date() > new Date(user.resetPasswordExpiresAt)) {
+            throw new Error('Invalid or expired reset link');
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        user.password = hashedPassword;
+        user.resetPasswordTokenHash = null;
+        user.resetPasswordExpiresAt = null;
+        await user.save();
+
+        return { reset: true };
     },
 
     login: async (email, password) => {
