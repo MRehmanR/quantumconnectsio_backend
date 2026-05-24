@@ -190,13 +190,20 @@ exports.forgotPassword = async (req, res) => {
             return res.status(400).json({ success: false, message: 'email is required' });
         }
 
-        await authService.requestPasswordReset(email);
+        const result = await authService.requestPasswordReset(email);
 
         return res.status(200).json({
             success: true,
-            message: 'If an account exists for this email, a reset link has been sent.'
+            message: 'If an account exists for this email, a reset link has been sent.',
+            data: result
         });
     } catch (error) {
+        if (error.code === 'ACCOUNT_NOT_FOUND') {
+            return res.status(404).json({ success: false, message: error.message });
+        }
+        if (error.code === 'SMTP_NOT_CONFIGURED') {
+            return res.status(503).json({ success: false, message: 'Email service is not configured. Please contact support.' });
+        }
         return res.status(500).json({ success: false, message: error.message || 'Failed to send reset email' });
     }
 };

@@ -264,7 +264,9 @@ const authService = {
     requestPasswordReset: async (email) => {
         const user = await User.unscoped().findOne({ where: { email } });
         if (!user) {
-            return { sent: true };
+            const error = new Error('Account not found with this email');
+            error.code = 'ACCOUNT_NOT_FOUND';
+            throw error;
         }
 
         const token = crypto.randomBytes(32).toString('hex');
@@ -278,7 +280,7 @@ const authService = {
         const resetUrl = `${FRONTEND_APP_URL}/reset-password?token=${token}&email=${encodeURIComponent(email)}`;
         await sendPasswordResetEmail({ to: email, resetUrl });
 
-        return { sent: true };
+        return { sent: true, delivery: 'email' };
     },
 
     resetPassword: async ({ email, token, password }) => {
