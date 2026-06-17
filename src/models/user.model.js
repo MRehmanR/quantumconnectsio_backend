@@ -55,6 +55,11 @@ const User = sequelize.define(
             allowNull: false,
             defaultValue: 'UTC'
         },
+        countryCode: {
+            type: DataTypes.STRING,
+            allowNull: false,
+            defaultValue: ''
+        },
         billingAnniversaryDay: {
             type: DataTypes.INTEGER,
             allowNull: false,

@@ -22,6 +22,7 @@ const {
     OPENAI_API_KEY,
     OPENAI_MODEL
 } = require('../config/env');
+const { normalizeCountryCode } = require('../utils/country');
 
 const requestJson = ({ method, url, headers = {}, body }) =>
     new Promise((resolve, reject) => {
@@ -306,21 +307,11 @@ const toFormBody = (params) =>
         .join('&');
 
 const normalizeTwilioCountryCode = (value) => {
-    const raw = String(value || '').trim().toUpperCase();
+    const raw = normalizeCountryCode(value);
     if (!raw) {
         return String(TWILIO_NUMBER_COUNTRY || 'US').trim().toUpperCase();
     }
-
-    const aliases = {
-        UK: 'GB',
-        ENGLAND: 'GB',
-        SCOTLAND: 'GB',
-        WALES: 'GB',
-        NORTHERNIRELAND: 'GB',
-        UAE: 'AE'
-    };
-
-    return aliases[raw] || raw;
+    return raw;
 };
 
 const getAutoAssignCountryFallbacks = (preferredCountry) => {
@@ -741,7 +732,7 @@ const listAvailableNumbersForUser = async ({ userId, country, areaCode, contains
     }
 
     const available = await getTwilioNumber({
-        country,
+        country: country || user.countryCode || undefined,
         areaCode,
         contains,
         limit
@@ -1303,17 +1294,18 @@ const provisionForUser = async (userId, options = {}) => {
 
     try {
         const requestedPhoneNumber = String(options?.phoneNumber || '').trim();
-        const requestedCountry = String(options?.country || '').trim().toUpperCase();
+        const requestedCountry = normalizeTwilioCountryCode(options?.country || user.countryCode || '');
         const requestedAreaCode = String(options?.areaCode || '').trim();
         const requestedWebsiteUrl = normalizeWebsiteUrl(options?.websiteUrl || '');
         const autoAssign = Boolean(options?.autoAssign);
         const skipRetell = Boolean(options?.skipRetell);
+        const forceTwilioPurchase = Boolean(options?.forceTwilioPurchase);
         const sipTrunkConfig = await resolveSipTrunkConfigForImport({
             user,
             phoneNumber: user.inboundNumber
         });
 
-        const twilioAlreadyConfigured = Boolean(user.inboundNumber && user.twilioPhoneNumberSid && !requestedPhoneNumber);
+        const twilioAlreadyConfigured = Boolean(user.inboundNumber && user.twilioPhoneNumberSid && !requestedPhoneNumber && !forceTwilioPurchase);
         let twilio = twilioAlreadyConfigured
             ? {
                   skipped: true,

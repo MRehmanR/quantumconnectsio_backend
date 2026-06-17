@@ -13,6 +13,12 @@ exports.register = async (req, res) => {
             inboundNumber,
             ownerPhone,
             timezone,
+            country,
+            countryCode,
+            region,
+            locationCountry,
+            geoCountry,
+            geoLocation,
             billingAnniversaryDay
         } = req.body;
 
@@ -30,6 +36,12 @@ exports.register = async (req, res) => {
             inboundNumber,
             ownerPhone,
             timezone,
+            country,
+            countryCode,
+            region,
+            locationCountry,
+            geoCountry,
+            geoLocation,
             billingAnniversaryDay
         });
 
@@ -48,6 +60,7 @@ exports.register = async (req, res) => {
                 inboundNumber: user.inboundNumber,
                 ownerPhone: user.ownerPhone,
                 timezone: user.timezone,
+                countryCode: user.countryCode,
                 billingAnniversaryDay: user.billingAnniversaryDay,
                 twilioPhoneNumberSid: user.twilioPhoneNumberSid,
                 retellAgentId: user.retellAgentId,

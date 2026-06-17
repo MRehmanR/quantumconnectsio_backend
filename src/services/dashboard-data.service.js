@@ -17,7 +17,8 @@ const {
     AutomationEvent,
     EscalationLog,
     KbQueryLog,
-    DailySummary
+    DailySummary,
+    DemoNumber
 } = require('../models');
 const { defaultFeatureToggles } = require('../constants/feature-toggles');
 const {
@@ -32,7 +33,10 @@ const {
     RETELL_API_BASE_URL,
     RETELL_UPDATE_AGENT_PATH
 } = require('../config/env');
-const { normalizePhone } = require('../utils/phone');
+const provisioningService = require('./provisioning.service');
+const demoNumberService = require('./demo-number.service');
+const { normalizePhone, getCountryHintFromE164 } = require('../utils/phone');
+const { resolveCountryFromPayload, normalizeCountryCode } = require('../utils/country');
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 const timeFormatter = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -319,7 +323,11 @@ const finalizePaidPlanPurchase = async ({ user, plan, paymentReference = '' }) =
                 invoiceId: existingInvoice.invoiceNumber,
                 referralAwarded: false,
                 referralBonusMinutes: 0,
-                referralBonusExpiresAt: null
+                referralBonusExpiresAt: null,
+                numberProvisioning: {
+                    skipped: true,
+                    reason: 'payment_already_processed'
+                }
             };
         }
     }
@@ -339,13 +347,47 @@ const finalizePaidPlanPurchase = async ({ user, plan, paymentReference = '' }) =
     });
 
     const referralAward = await applyReferralAwardIfEligible(user);
+    let numberProvisioning = null;
+
+    if (user.role === 'user') {
+        try {
+            const assignedDemoNumber = await DemoNumber.findOne({
+                where: {
+                    assignedToUserId: user.id,
+                    status: 'assigned'
+                },
+                attributes: ['id']
+            });
+            const shouldReplaceDemoNumber = Boolean(assignedDemoNumber);
+            numberProvisioning = await provisioningService.provisionForUser(user.id, {
+                country: user.countryCode || undefined,
+                autoAssign: true,
+                forceTwilioPurchase: shouldReplaceDemoNumber
+            });
+            if (shouldReplaceDemoNumber) {
+                await demoNumberService.releaseAssignedDemoForUser({ userId: user.id });
+            }
+        } catch (error) {
+            const freshUser = await User.findByPk(user.id);
+            numberProvisioning = {
+                skipped: false,
+                error: String(error?.message || 'Twilio number provisioning failed')
+            };
+            if (freshUser) {
+                freshUser.provisioningStatus = 'failed';
+                freshUser.provisioningError = numberProvisioning.error.slice(0, 240);
+                await freshUser.save();
+            }
+        }
+    }
 
     return {
         plan: plan.name,
         invoiceId: invoice.invoiceNumber,
         referralAwarded: Boolean(referralAward),
         referralBonusMinutes: referralAward ? referralAward.minutesAwarded : 0,
-        referralBonusExpiresAt: referralAward ? referralAward.expiresAt : null
+        referralBonusExpiresAt: referralAward ? referralAward.expiresAt : null,
+        numberProvisioning
     };
 };
 
@@ -618,6 +660,15 @@ const getProfile = async ({ actor }) => {
         throw new Error('User not found');
     }
 
+    const demoNumber = await DemoNumber.findOne({
+        where: {
+            assignedToUserId: user.id,
+            status: {
+                [Op.in]: ['assigned', 'promoted']
+            }
+        }
+    });
+
     return {
         id: String(user.id),
         username: user.username,
@@ -626,12 +677,21 @@ const getProfile = async ({ actor }) => {
         ownerPhone: user.ownerPhone || '',
         inboundNumber: user.inboundNumber || '',
         timezone: user.timezone || 'UTC',
+        countryCode: user.countryCode || '',
         retellSipTerminationUri: user.retellSipTerminationUri || '',
         retellSipTrunkAuthUsername: user.retellSipTrunkAuthUsername || '',
         hasRetellSipTrunkAuthPassword: Boolean(user.retellSipTrunkAuthPassword),
         retellAgentId: user.retellAgentId || '',
         provisioningStatus: user.provisioningStatus || 'pending',
-        provisioningError: user.provisioningError || ''
+        provisioningError: user.provisioningError || '',
+        demoNumber: demoNumber
+            ? {
+                  id: demoNumber.id,
+                  phoneNumber: demoNumber.phoneNumber,
+                  status: demoNumber.status,
+                  expiresAt: demoNumber.expiresAt
+              }
+            : null
     };
 };
 
@@ -651,6 +711,9 @@ const updateProfile = async ({ actor, payload }) => {
     const nextOwnerPhoneRaw = String(payload?.ownerPhone || '').trim();
     const nextTimezone = String(payload?.timezone || user.timezone || 'UTC').trim();
     const nextInboundNumber = String(payload?.inboundNumber || user.inboundNumber || '').trim();
+    const nextCountryCode = normalizeCountryCode(
+        resolveCountryFromPayload(payload) || user.countryCode || getCountryHintFromE164(nextOwnerPhoneRaw)
+    );
     const nextRetellSipTerminationUri = String(payload?.retellSipTerminationUri || '').trim();
     const nextRetellSipTrunkAuthUsername = String(payload?.retellSipTrunkAuthUsername || '').trim();
     const hasSipPasswordPayload = Object.prototype.hasOwnProperty.call(payload || {}, 'retellSipTrunkAuthPassword');
@@ -695,6 +758,7 @@ const updateProfile = async ({ actor, payload }) => {
     user.businessName = nextBusinessName;
     user.ownerPhone = normalizedOwnerPhone.e164 || '';
     user.timezone = nextTimezone || 'UTC';
+    user.countryCode = nextCountryCode;
     user.inboundNumber = nextInboundNumber || null;
     user.retellSipTerminationUri = nextRetellSipTerminationUri;
     user.retellSipTrunkAuthUsername = nextRetellSipTrunkAuthUsername;
@@ -709,6 +773,7 @@ const updateProfile = async ({ actor, payload }) => {
         ownerPhone: user.ownerPhone || '',
         inboundNumber: user.inboundNumber || '',
         timezone: user.timezone || 'UTC',
+        countryCode: user.countryCode || '',
         retellSipTerminationUri: user.retellSipTerminationUri || '',
         retellSipTrunkAuthUsername: user.retellSipTrunkAuthUsername || '',
         hasRetellSipTrunkAuthPassword: Boolean(user.retellSipTrunkAuthPassword)

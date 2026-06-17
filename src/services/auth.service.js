@@ -5,7 +5,9 @@ const User = require('../models/user.model');
 const Invoice = require('../models/invoice.model');
 const { generateToken } = require('../utils/jwt');
 const provisioningService = require('./provisioning.service');
-const { normalizePhone } = require('../utils/phone');
+const demoNumberService = require('./demo-number.service');
+const { normalizePhone, getCountryHintFromE164 } = require('../utils/phone');
+const { resolveCountryFromPayload, normalizeCountryCode } = require('../utils/country');
 const { FRONTEND_APP_URL, RESET_PASSWORD_TOKEN_TTL_MIN } = require('../config/env');
 const { sendPasswordResetEmail } = require('../utils/email');
 
@@ -77,6 +79,14 @@ const authService = {
             }
         }
 
+        const normalizedOwnerPhone = normalizePhone(userData.ownerPhone || '', {});
+        if (!normalizedOwnerPhone.ok && userData.ownerPhone) {
+            throw new Error(normalizedOwnerPhone.reason);
+        }
+        const countryCode = normalizeCountryCode(
+            resolveCountryFromPayload(userData) || getCountryHintFromE164(normalizedOwnerPhone.e164)
+        );
+
         const user = await User.create({
             
             username: userData.username,
@@ -85,19 +95,28 @@ const authService = {
             role: 'user',
             businessName: userData.businessName || '',
             inboundNumber: userData.inboundNumber || null,
-            ownerPhone: (() => {
-                const normalized = normalizePhone(userData.ownerPhone || '', {});
-                if (!normalized.ok && userData.ownerPhone) {
-                    throw new Error(normalized.reason);
-                }
-                return normalized.e164 || '';
-            })(),
+            ownerPhone: normalizedOwnerPhone.e164 || '',
             timezone: userData.timezone || 'UTC',
+            countryCode,
             billingAnniversaryDay: Number(userData.billingAnniversaryDay || new Date().getDate()),
             referralCode,
             referredByCode,
             referredByMethod
         });
+
+        if (!user.inboundNumber) {
+            try {
+                await demoNumberService.assignDemoNumber({
+                    userId: user.id,
+                    region: countryCode || undefined
+                });
+                await user.reload();
+            } catch (error) {
+                user.provisioningStatus = 'pending';
+                user.provisioningError = String(error?.message || 'Demo number assignment failed').slice(0, 240);
+                await user.save();
+            }
+        }
 
         return user;
     },
@@ -350,6 +369,7 @@ const authService = {
                 inboundNumber: user.inboundNumber,
                 ownerPhone: user.ownerPhone,
                 timezone: user.timezone,
+                countryCode: user.countryCode,
                 twilioPhoneNumberSid: user.twilioPhoneNumberSid,
                 retellAgentId: user.retellAgentId,
                 provisioningStatus: user.provisioningStatus,

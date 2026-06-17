@@ -3,6 +3,7 @@ const authRoutes = require('./routes/auth.routes');
 const userRoutes = require('./routes/user.routes');
 const dashboardDataRoutes = require('./routes/dashboard-data.routes');
 const automationRoutes = require('./routes/automation.routes');
+const numbersRoutes = require('./routes/numbers.routes');
 const auditMiddleware = require('./middleware/audit.middleware');
 const { connectDB } = require('./config/db');
 require('./models');
@@ -36,5 +37,6 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api', dashboardDataRoutes);
 app.use('/api/automation', automationRoutes);
+app.use('/api/numbers', numbersRoutes);
 
 module.exports = app;

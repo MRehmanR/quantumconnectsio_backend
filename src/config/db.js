@@ -192,6 +192,13 @@ const ensureSchemaColumns = async () => {
             defaultValue: null
         });
     }
+    if (!usersTable.countryCode) {
+        await queryInterface.addColumn('users', 'countryCode', {
+            type: Sequelize.STRING,
+            allowNull: false,
+            defaultValue: ''
+        });
+    }
 
     const invoicesTable = await queryInterface.describeTable('invoices');
     if (!invoicesTable.paymentReference) {

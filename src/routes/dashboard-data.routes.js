@@ -1,6 +1,7 @@
 const express = require('express');
 const dashboardDataController = require('../controllers/dashboard-data.controller');
 const adminMiddleware = require('../middleware/admin.middleware');
+const numbersController = require('../controllers/numbers.controller');
 const { authenticate, requireActiveSubscription, authenticateOrAutomationKey } = require('../middleware/auth.middleware');
 
 const router = express.Router();
@@ -39,5 +40,6 @@ router.get('/admin/overview', authenticate, adminMiddleware, dashboardDataContro
 router.get('/admin/users', authenticate, adminMiddleware, dashboardDataController.getAdminUsers);
 router.get('/admin/subscriptions', authenticate, adminMiddleware, dashboardDataController.getAdminSubscriptions);
 router.get('/admin/analytics', authenticate, adminMiddleware, dashboardDataController.getAdminAnalytics);
+router.get('/admin/demo-numbers', authenticate, adminMiddleware, numbersController.listDemoNumbers);
 
 module.exports = router;
