@@ -56,6 +56,6 @@ module.exports = {
     STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY || '',
     STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET || '',
     STRIPE_CURRENCY: process.env.STRIPE_CURRENCY || 'gbp',
-    DEMO_NUMBER_TTL_HOURS: Number(process.env.DEMO_NUMBER_TTL_HOURS || 72),
+    DEMO_NUMBER_TTL_HOURS: Number(process.env.DEMO_NUMBER_TTL_HOURS || 168),
     DEMO_NUMBER_RECLAIM_INTERVAL_MIN: Number(process.env.DEMO_NUMBER_RECLAIM_INTERVAL_MIN || 15)
 };

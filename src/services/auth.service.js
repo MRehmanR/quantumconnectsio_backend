@@ -21,6 +21,33 @@ const generateReferralCode = (username) => {
     return `${normalized}${suffix}`;
 };
 
+const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
+
+const normalizeUsername = (username) =>
+    String(username || 'User')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .slice(0, 50) || 'User';
+
+const getUniqueUsername = async (requestedUsername) => {
+    const base = normalizeUsername(requestedUsername);
+    const existing = await User.findOne({ where: { username: base }, attributes: ['id'] });
+    if (!existing) {
+        return base;
+    }
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+        const suffix = Math.floor(1000 + Math.random() * 9000);
+        const candidate = `${base.slice(0, 45)} ${suffix}`.slice(0, 50);
+        const taken = await User.findOne({ where: { username: candidate }, attributes: ['id'] });
+        if (!taken) {
+            return candidate;
+        }
+    }
+
+    return `${base.slice(0, 36)} ${Date.now().toString().slice(-10)}`.slice(0, 50);
+};
+
 const TRIAL_DAYS = 7;
 const PAID_PLANS = new Set(['Rise', 'Elevate', 'Apex', 'Starter', 'Core', 'Pro', 'Scale']);
 
@@ -51,22 +78,25 @@ const getTrialInfo = async (user) => {
 
 const authService = {
     register: async (userData) => {
-        const existingUser = await User.findOne({
-            where: {
-                [Op.or]: [{ email: userData.email }, { username: userData.username }]
-            },
+        const email = normalizeEmail(userData.email);
+        const username = await getUniqueUsername(userData.username);
+
+        const existingEmail = await User.findOne({
+            where: { email },
             attributes: ['id']
         });
 
-        if (existingUser) {
-            throw new Error('Email or username already exists');
+        if (existingEmail) {
+            const duplicateEmailError = new Error('Email already exists. Please log in or use another email.');
+            duplicateEmailError.code = 'EMAIL_ALREADY_EXISTS';
+            throw duplicateEmailError;
         }
 
         const hashedPassword = await bcrypt.hash(userData.password, 10);
 
-        let referralCode = generateReferralCode(userData.username);
+        let referralCode = generateReferralCode(username);
         while (await User.findOne({ where: { referralCode }, attributes: ['id'] })) {
-            referralCode = generateReferralCode(userData.username);
+            referralCode = generateReferralCode(username);
         }
 
         let referredByCode = '';
@@ -86,15 +116,26 @@ const authService = {
         const countryCode = normalizeCountryCode(
             resolveCountryFromPayload(userData) || getCountryHintFromE164(normalizedOwnerPhone.e164)
         );
+        const requestedInboundNumber = String(userData.inboundNumber || '').trim();
+
+        if (requestedInboundNumber) {
+            const numberOwner = await User.findOne({
+                where: { inboundNumber: requestedInboundNumber },
+                attributes: ['id', 'email']
+            });
+            if (numberOwner) {
+                throw new Error(`This number is already assigned to another business account (${numberOwner.email}).`);
+            }
+        }
 
         const user = await User.create({
             
-            username: userData.username,
-            email: userData.email,
+            username,
+            email,
             password: hashedPassword,
             role: 'user',
             businessName: userData.businessName || '',
-            inboundNumber: userData.inboundNumber || null,
+            inboundNumber: requestedInboundNumber || null,
             ownerPhone: normalizedOwnerPhone.e164 || '',
             timezone: userData.timezone || 'UTC',
             countryCode,
@@ -115,6 +156,20 @@ const authService = {
                 user.provisioningStatus = 'pending';
                 user.provisioningError = String(error?.message || 'Demo number assignment failed').slice(0, 240);
                 await user.save();
+            }
+        }
+
+        if (user.inboundNumber && !user.retellAgentId) {
+            try {
+                await provisioningService.provisionRetellAgentForUser(user.id);
+                await user.reload();
+            } catch (error) {
+                await user.reload();
+                if (!user.provisioningError) {
+                    user.provisioningStatus = 'manual_required';
+                    user.provisioningError = String(error?.message || 'Demo voice agent assignment failed').slice(0, 240);
+                    await user.save();
+                }
             }
         }
 
@@ -281,7 +336,8 @@ const authService = {
     },
 
     requestPasswordReset: async (email) => {
-        const user = await User.unscoped().findOne({ where: { email } });
+        const normalizedEmail = normalizeEmail(email);
+        const user = await User.unscoped().findOne({ where: { email: normalizedEmail } });
         if (!user) {
             const error = new Error('Account not found with this email');
             error.code = 'ACCOUNT_NOT_FOUND';
@@ -296,8 +352,8 @@ const authService = {
         user.resetPasswordExpiresAt = expiresAt;
         await user.save();
 
-        const resetUrl = `${FRONTEND_APP_URL}/reset-password?token=${token}&email=${encodeURIComponent(email)}`;
-        await sendPasswordResetEmail({ to: email, resetUrl });
+        const resetUrl = `${FRONTEND_APP_URL}/reset-password?token=${token}&email=${encodeURIComponent(normalizedEmail)}`;
+        await sendPasswordResetEmail({ to: normalizedEmail, resetUrl });
 
         return { sent: true, delivery: 'email' };
     },
@@ -307,7 +363,7 @@ const authService = {
             throw new Error('Password must be at least 8 characters long');
         }
 
-        const user = await User.unscoped().findOne({ where: { email } });
+        const user = await User.unscoped().findOne({ where: { email: normalizeEmail(email) } });
         if (!user || !user.resetPasswordTokenHash || !user.resetPasswordExpiresAt) {
             throw new Error('Invalid or expired reset link');
         }
@@ -327,7 +383,7 @@ const authService = {
     },
 
     login: async (email, password) => {
-        const user = await User.unscoped().findOne({ where: { email } });
+        const user = await User.unscoped().findOne({ where: { email: normalizeEmail(email) } });
         if (!user) {
             throw new Error('Invalid credentials');
         }

@@ -77,6 +77,9 @@ exports.register = async (req, res) => {
             }
         });
     } catch (error) {
+        if (error.code === 'EMAIL_ALREADY_EXISTS') {
+            return res.status(409).json({ success: false, message: error.message });
+        }
         return res.status(400).json({ success: false, message: error.message });
     }
 };

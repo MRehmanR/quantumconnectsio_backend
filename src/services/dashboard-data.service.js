@@ -356,15 +356,23 @@ const finalizePaidPlanPurchase = async ({ user, plan, paymentReference = '' }) =
                     assignedToUserId: user.id,
                     status: 'assigned'
                 },
-                attributes: ['id']
+                attributes: ['id', 'phoneNumber', 'providerNumberId']
             });
-            const shouldReplaceDemoNumber = Boolean(assignedDemoNumber);
+            const currentNumberIsDemo =
+                Boolean(assignedDemoNumber?.phoneNumber) &&
+                String(user.inboundNumber || '').trim() === String(assignedDemoNumber.phoneNumber || '').trim();
+            const currentSidIsDemo =
+                Boolean(assignedDemoNumber?.providerNumberId) &&
+                String(user.twilioPhoneNumberSid || '').trim() === String(assignedDemoNumber.providerNumberId || '').trim();
+            const shouldReplaceDemoNumber = Boolean(assignedDemoNumber) && (currentNumberIsDemo || currentSidIsDemo);
+
             numberProvisioning = await provisioningService.provisionForUser(user.id, {
                 country: user.countryCode || undefined,
                 autoAssign: true,
                 forceTwilioPurchase: shouldReplaceDemoNumber
             });
-            if (shouldReplaceDemoNumber) {
+
+            if (assignedDemoNumber && (shouldReplaceDemoNumber || !currentNumberIsDemo)) {
                 await demoNumberService.releaseAssignedDemoForUser({ userId: user.id });
             }
         } catch (error) {
@@ -751,6 +759,24 @@ const updateProfile = async ({ actor, payload }) => {
         const conflictError = new Error('Email already exists');
         conflictError.code = 'EMAIL_ALREADY_EXISTS';
         throw conflictError;
+    }
+
+    if (nextInboundNumber && nextInboundNumber !== String(user.inboundNumber || '').trim()) {
+        const numberTaken = await User.findOne({
+            where: {
+                inboundNumber: nextInboundNumber,
+                id: {
+                    [Op.ne]: user.id
+                }
+            },
+            attributes: ['id', 'email']
+        });
+
+        if (numberTaken) {
+            const conflictError = new Error(`This number is already assigned to another business account (${numberTaken.email}).`);
+            conflictError.code = 'NUMBER_ALREADY_ASSIGNED';
+            throw conflictError;
+        }
     }
 
     user.username = nextUsername;
@@ -1504,7 +1530,7 @@ const deleteKnowledgeBaseEntry = async (id, { actor } = {}) => {
     return deleted > 0;
 };
 
-const createAppointment = async ({ customerName, customerPhone, customerEmail, date, time, type, tenantEmail, dialedNumber, ownerPhone, actor }) => {
+const createAppointment = async ({ customerName, customerPhone, customerEmail, date, time, type, status, tenantEmail, dialedNumber, ownerPhone, actor }) => {
     const tenantUser = await resolveTenantUserForOperation({ actor, tenantEmail, dialedNumber, ownerPhone });
     ensureTenantForAutomation({ actor, tenantUser });
 
@@ -1532,6 +1558,51 @@ const createAppointment = async ({ customerName, customerPhone, customerEmail, d
     }
 
     assertAppointmentNotInPast(date, requestedMinutes);
+    const formattedTime = formatMinutesToHHmm(requestedMinutes);
+    const requestedStatus = ['Pending', 'Confirmed'].includes(status) ? status : 'Pending';
+
+    const existingAtSlot = await Appointment.findOne({
+        where: {
+            appointmentDate: date,
+            appointmentTime: formattedTime,
+            status: {
+                [Op.in]: ['Pending', 'Confirmed']
+            },
+            ...(tenantUser?.id ? { userId: tenantUser.id } : {})
+        },
+        order: [['createdAt', 'DESC']]
+    });
+
+    if (existingAtSlot) {
+        const existingContact = await AppointmentContact.findOne({ where: { appointmentId: existingAtSlot.id } });
+        const existingPhone = String(existingContact?.phone || '').trim();
+        const nextPhone = String(normalizedCustomerPhone.e164 || customerPhoneRaw || '').trim();
+        const existingEmail = String(existingContact?.email || '').trim().toLowerCase();
+        const nextEmail = String(customerEmail || '').trim().toLowerCase();
+        const existingName = String(existingContact?.name || existingAtSlot.caller || '').trim().toLowerCase();
+        const nextName = String(customerName || '').trim().toLowerCase();
+        const sameCustomer =
+            (nextPhone && existingPhone === nextPhone) ||
+            (nextEmail && existingEmail === nextEmail) ||
+            (nextName && existingName === nextName);
+
+        if (sameCustomer) {
+            return {
+                id: String(existingAtSlot.id),
+                userId: existingAtSlot.userId,
+                caller: existingAtSlot.caller,
+                customerName: existingContact?.name || existingAtSlot.caller,
+                customerPhone: existingContact?.phone || '',
+                customerEmail: existingContact?.email || '',
+                date: dateFormatter.format(new Date(existingAtSlot.appointmentDate)),
+                time: existingAtSlot.appointmentTime,
+                type: existingAtSlot.type,
+                status: existingAtSlot.status,
+                deposit: serializeAppointmentDeposit(existingAtSlot),
+                duplicate: true
+            };
+        }
+    }
 
     const bookedSlotSet = await getBookedSlotSetForDate(date, tenantUser?.id);
     if (bookedSlotSet.has(requestedMinutes)) {
@@ -1551,9 +1622,9 @@ const createAppointment = async ({ customerName, customerPhone, customerEmail, d
     const appointment = await Appointment.create({
         caller: customerName,
         appointmentDate: date,
-        appointmentTime: formatMinutesToHHmm(requestedMinutes),
+        appointmentTime: formattedTime,
         type: type || 'Consultation',
-        status: 'Pending',
+        status: requestedStatus,
         userId: tenantUser?.id || null,
         inboundNumber: tenantUser?.inboundNumber || dialedNumber || ''
     });
@@ -2182,7 +2253,7 @@ const createStripeCheckoutSession = async ({ email, planName, actor, origin }) =
     const frontendBase = getFrontendBaseUrl(origin);
 
     const session = await stripe.checkout.sessions.create({
-        mode: 'payment',
+        mode: 'subscription',
         customer: customerId,
         line_items: [
             {
@@ -2191,6 +2262,9 @@ const createStripeCheckoutSession = async ({ email, planName, actor, origin }) =
                     product_data: {
                         name: `${plan.name} Plan`,
                         description: `${plan.callsLimit} calls per month`
+                    },
+                    recurring: {
+                        interval: 'month'
                     },
                     unit_amount: Math.round(Number(plan.price) * 100)
                 },

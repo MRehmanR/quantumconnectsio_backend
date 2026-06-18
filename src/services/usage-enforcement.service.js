@@ -3,6 +3,9 @@ const { UsageCycle, User } = require('../models');
 
 const PLAN_LIMITS = {
     Trial: { includedCalls: 50, concurrentCalls: 2 },
+    Rise: { includedCalls: 150, concurrentCalls: 5 },
+    Elevate: { includedCalls: 500, concurrentCalls: 20 },
+    Apex: { includedCalls: 1100, concurrentCalls: 50 },
     Starter: { includedCalls: 75, concurrentCalls: 5 },
     Core: { includedCalls: 200, concurrentCalls: 10 },
     Pro: { includedCalls: 500, concurrentCalls: 20 },

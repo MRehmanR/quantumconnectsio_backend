@@ -29,6 +29,39 @@ const normalizeIdempotencyKey = ({ idempotencyKey, eventType, occurredAt, payloa
     return `hash_${hash}`;
 };
 
+const getPayloadCallId = (payload = {}) =>
+    String(
+        payload.callId ||
+        payload.call_id ||
+        payload.call?.call_id ||
+        payload.call?.id ||
+        payload.id ||
+        payload.retellCallId ||
+        ''
+    ).trim();
+
+const normalizeRetellEventType = (eventType) => {
+    const raw = String(eventType || '').trim();
+    const normalized = raw.replace(/_/g, '.').toLowerCase();
+    const aliases = {
+        'call.analyzed': 'call.completed',
+        'call.completed': 'call.completed',
+        'call.completed.webhook': 'call.completed'
+    };
+
+    return aliases[normalized] || raw || 'unknown';
+};
+
+const normalizeSemanticIdempotencyKey = ({ source, eventType, idempotencyKey, payload }) => {
+    const normalizedSource = String(source || '').trim().toLowerCase();
+    const callId = getPayloadCallId(payload);
+    if (normalizedSource === 'retell' && callId) {
+        return `retell_${eventType}_${callId}`;
+    }
+
+    return idempotencyKey;
+};
+
 const timingSafeCompare = (left, right) => {
     const leftBuffer = Buffer.from(left || '', 'utf8');
     const rightBuffer = Buffer.from(right || '', 'utf8');
@@ -396,9 +429,17 @@ const maybeEmitThresholdEvents = async ({ userId, tenantEmail, usage }) => {
 };
 
 const ingestEvent = async ({ source, eventType, idempotencyKey, tenantEmail, occurredAt, payload }) => {
-    const resolvedType = eventType || 'unknown';
-    const finalIdempotencyKey = normalizeIdempotencyKey({
+    const resolvedType = String(source || '').toLowerCase() === 'retell'
+        ? normalizeRetellEventType(eventType)
+        : (eventType || 'unknown');
+    const semanticIdempotencyKey = normalizeSemanticIdempotencyKey({
+        source,
+        eventType: resolvedType,
         idempotencyKey,
+        payload: payload || {}
+    });
+    const finalIdempotencyKey = normalizeIdempotencyKey({
+        idempotencyKey: semanticIdempotencyKey,
         eventType: resolvedType,
         occurredAt,
         payload
@@ -409,12 +450,6 @@ const ingestEvent = async ({ source, eventType, idempotencyKey, tenantEmail, occ
     });
 
     if (existing) {
-        if (existing.status !== 'duplicate') {
-            existing.status = 'duplicate';
-            existing.processedAt = new Date();
-            await existing.save();
-        }
-
         return {
             duplicated: true,
             eventId: existing.id,
@@ -528,6 +563,19 @@ const getAutomationOverview = async () => {
 };
 
 const preflightInboundCall = async ({ tenantEmail, dialedNumber, callerNumber, idempotencyKey }) => {
+    const normalizedKey = String(idempotencyKey || '').trim();
+    const eventKey = normalizedKey ? `call_preflight_${normalizedKey}` : '';
+
+    if (eventKey) {
+        const existing = await AutomationEvent.findOne({ where: { idempotencyKey: eventKey } });
+        if (existing?.payload?.result) {
+            return {
+                ...existing.payload.result,
+                duplicated: true
+            };
+        }
+    }
+
     const result = await usageEnforcementService.preflightCall({
         tenantEmail,
         dialedNumber,
@@ -537,6 +585,30 @@ const preflightInboundCall = async ({ tenantEmail, dialedNumber, callerNumber, i
 
     if (result.accepted && result.userId && result.usage) {
         await maybeEmitThresholdEvents({ userId: result.userId, tenantEmail, usage: result.usage });
+    }
+
+    if (eventKey) {
+        try {
+            await AutomationEvent.create({
+                source: 'system',
+                eventType: 'call.preflight',
+                idempotencyKey: eventKey,
+                tenantEmail: tenantEmail || '',
+                occurredAt: new Date(),
+                payload: {
+                    dialedNumber: dialedNumber || '',
+                    callerNumber: callerNumber || '',
+                    result
+                },
+                status: 'processed',
+                processedAt: new Date()
+            });
+        } catch (error) {
+            const duplicate = String(error?.name || '').includes('Unique') || String(error?.message || '').includes('unique');
+            if (!duplicate) {
+                throw error;
+            }
+        }
     }
 
     return result;

@@ -16,6 +16,12 @@ const requireAutomationKey = (req, res) => {
     return true;
 };
 
+const getDialedNumber = (body = {}) =>
+    body.dialedNumber || body.to_number || body.to || body.To || body.payload?.to_number || body.payload?.to || body.payload?.To;
+
+const getCallerNumber = (body = {}) =>
+    body.callerNumber || body.callerPhone || body.from_number || body.from || body.From || body.payload?.from_number || body.payload?.from || body.payload?.From;
+
 exports.ingestRetellWebhook = async (req, res) => {
     try {
         const signature = readSignature(req);
@@ -51,8 +57,8 @@ exports.identifyInboundClient = async (req, res) => {
 
         const data = await automationService.identifyInboundClient({
             tenantEmail: req.body.tenantEmail,
-            dialedNumber: req.body.dialedNumber,
-            callerNumber: req.body.callerNumber
+            dialedNumber: getDialedNumber(req.body),
+            callerNumber: getCallerNumber(req.body)
         });
 
         return res.status(200).json({ success: true, data, business: data.business || null });
@@ -91,7 +97,7 @@ exports.checkAppointmentAvailabilityLegacy = async (req, res) => {
         const availability = await dashboardDataService.getAppointmentAvailability({
             date,
             tenantEmail: req.body.tenantEmail,
-            dialedNumber: req.body.dialedNumber
+            dialedNumber: getDialedNumber(req.body)
         });
         const availableSlots = Array.isArray(availability.availableSlots) ? availability.availableSlots : [];
 
@@ -126,8 +132,9 @@ exports.bookAppointmentLegacy = async (req, res) => {
             date: requestedSlot.date || (typeof requestedSlot === 'string' ? requestedSlot.slice(0, 10) : req.body.date),
             time: requestedSlot.time || (typeof requestedSlot === 'string' ? requestedSlot.slice(11, 16) : req.body.time),
             type: req.body.service || req.body.type || 'Consultation',
+            status: 'Confirmed',
             tenantEmail: req.body.tenantEmail,
-            dialedNumber: req.body.dialedNumber
+            dialedNumber: getDialedNumber(req.body)
         });
 
         return res.status(201).json({ success: true, data, booking: data });
@@ -160,7 +167,7 @@ exports.rescheduleAppointmentLegacy = async (req, res) => {
             date: newSlot.date || (typeof newSlot === 'string' ? newSlot.slice(0, 10) : req.body.date),
             time: newSlot.time || (typeof newSlot === 'string' ? newSlot.slice(11, 16) : req.body.time),
             tenantEmail: req.body.tenantEmail,
-            dialedNumber: req.body.dialedNumber
+            dialedNumber: getDialedNumber(req.body)
         });
 
         if (!data) {
@@ -186,7 +193,7 @@ exports.cancelAppointmentLegacy = async (req, res) => {
             appointmentId: req.body.appointmentId,
             reason: req.body.reason || 'caller_requested',
             tenantEmail: req.body.tenantEmail,
-            dialedNumber: req.body.dialedNumber
+            dialedNumber: getDialedNumber(req.body)
         });
 
         if (!data) {
@@ -342,8 +349,8 @@ exports.preflightInboundCall = async (req, res) => {
 
         const data = await automationService.preflightInboundCall({
             tenantEmail: req.body.tenantEmail,
-            dialedNumber: req.body.dialedNumber,
-            callerNumber: req.body.callerNumber,
+            dialedNumber: getDialedNumber(req.body),
+            callerNumber: getCallerNumber(req.body),
             idempotencyKey: req.body.idempotencyKey
         });
 
@@ -363,7 +370,7 @@ exports.finalizeInboundCall = async (req, res) => {
 
         const data = await automationService.finalizeInboundCall({
             tenantEmail: req.body.tenantEmail,
-            dialedNumber: req.body.dialedNumber,
+            dialedNumber: getDialedNumber(req.body),
             wasConnected: req.body.wasConnected
         });
 
