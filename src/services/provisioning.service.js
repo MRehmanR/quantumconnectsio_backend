@@ -1455,6 +1455,7 @@ const provisionForUser = async (userId, options = {}) => {
 
 module.exports = {
     provisionForUser,
+    purchaseTwilioNumber,
     listAvailableNumbersForUser,
     provisionRetellAgentForUser,
     generateRetellPromptForUser,

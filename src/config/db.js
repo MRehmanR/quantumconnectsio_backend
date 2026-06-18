@@ -86,6 +86,25 @@ const ensureDefaultAdmin = async () => {
     console.log('Default admin user created from environment settings.');
 };
 
+const seedDemoNumbersFromEnv = async () => {
+    try {
+        const demoNumberService = require('../services/demo-number.service');
+        const result = await demoNumberService.seedDemoNumbersFromEnv();
+        if (result.configured > 0) {
+            console.log(`Demo number inventory checked: ${result.configured} configured, ${result.seeded} added.`);
+        }
+        if (result.twilioSync?.synced) {
+            console.log(
+                `Twilio demo pool sync checked ${result.twilioSync.checked} owned numbers: ${result.twilioSync.imported} imported, ${result.twilioSync.updated} updated, ${result.twilioSync.skipped} skipped.`
+            );
+        } else if (result.twilioSync?.reason && result.twilioSync.reason !== 'disabled') {
+            console.warn(`Twilio demo pool sync skipped: ${result.twilioSync.reason}.`);
+        }
+    } catch (error) {
+        console.warn(`Demo number inventory seed skipped: ${error.message}`);
+    }
+};
+
 const ensureSchemaColumns = async () => {
     if (DB_DIALECT === 'sqlite') {
         return;
@@ -302,6 +321,7 @@ const connectDB = async () => {
     await sequelize.sync({ alter: DB_SYNC_ALTER === 'true' });
     await ensureSchemaColumns();
     await ensureDefaultAdmin();
+    await seedDemoNumbersFromEnv();
 };
 
 module.exports = {
