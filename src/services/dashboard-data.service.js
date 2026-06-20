@@ -1117,6 +1117,20 @@ const getDashboardOverview = async ({ actor, range = 'weekly', startDate = '', e
         })
     ]);
 
+    if (!isAdmin && user && !user.inboundNumber) {
+        try {
+            await demoNumberService.assignDemoNumber({
+                userId: user.id,
+                region: user.countryCode || undefined
+            });
+            await user.reload();
+        } catch (error) {
+            user.provisioningStatus = 'pending';
+            user.provisioningError = String(error?.message || 'Demo number assignment failed').slice(0, 240);
+            await user.save();
+        }
+    }
+
     const activePlanName = user?.plan || 'Trial';
     const activePlan = await SubscriptionPlan.findOne({ where: { name: activePlanName } });
     const callsLimit = Number(activePlan?.callsLimit || 50);

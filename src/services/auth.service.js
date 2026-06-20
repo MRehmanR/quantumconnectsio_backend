@@ -76,6 +76,24 @@ const getTrialInfo = async (user) => {
     };
 };
 
+const ensureTrialDemoNumber = async (user) => {
+    if (!user || user.role !== 'user' || user.inboundNumber) {
+        return;
+    }
+
+    try {
+        await demoNumberService.assignDemoNumber({
+            userId: user.id,
+            region: user.countryCode || undefined
+        });
+        await user.reload();
+    } catch (error) {
+        user.provisioningStatus = 'pending';
+        user.provisioningError = String(error?.message || 'Demo number assignment failed').slice(0, 240);
+        await user.save();
+    }
+};
+
 const authService = {
     register: async (userData) => {
         const email = normalizeEmail(userData.email);
@@ -405,6 +423,8 @@ const authService = {
                 await user.save();
             }
         }
+
+        await ensureTrialDemoNumber(user);
 
         const token = generateToken({ id: user.id, role: user.role, email: user.email });
 

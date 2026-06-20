@@ -28,6 +28,7 @@ module.exports = {
     TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN || '',
     TWILIO_NUMBER_COUNTRY: process.env.TWILIO_NUMBER_COUNTRY || 'US',
     TWILIO_AREA_CODE: process.env.TWILIO_AREA_CODE || '',
+    TWILIO_AUTO_ASSIGN_COUNTRIES: process.env.TWILIO_AUTO_ASSIGN_COUNTRIES || '',
     RETELL_API_KEY: process.env.RETELL_API_KEY || '',
     RETELL_API_BASE_URL: process.env.RETELL_API_BASE_URL || 'https://api.retellai.com',
     RETELL_CREATE_AGENT_PATH: process.env.RETELL_CREATE_AGENT_PATH || '/create-agent',

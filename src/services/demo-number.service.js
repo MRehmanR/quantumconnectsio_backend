@@ -8,6 +8,8 @@ const {
     DEMO_NUMBERS,
     TWILIO_ACCOUNT_SID,
     TWILIO_AUTH_TOKEN,
+    TWILIO_NUMBER_COUNTRY,
+    TWILIO_AUTO_ASSIGN_COUNTRIES,
     TWILIO_DEMO_SYNC_ENABLED,
     TWILIO_DEMO_SYNC_COUNTRIES,
     TWILIO_DEMO_MIN_IDLE_DAYS,
@@ -111,6 +113,31 @@ const getAllowedTwilioDemoCountries = () =>
         .split(',')
         .map(normalizeCountryCode)
         .filter(Boolean);
+
+const uniqueCountries = (values) => {
+    const seen = new Set();
+    const countries = [];
+    for (const value of values) {
+        const normalized = normalizeCountryCode(value);
+        if (normalized && !seen.has(normalized)) {
+            seen.add(normalized);
+            countries.push(normalized);
+        }
+    }
+    return countries;
+};
+
+const getDemoFallbackCountries = (preferredCountry) =>
+    uniqueCountries([
+        preferredCountry,
+        ...String(TWILIO_AUTO_ASSIGN_COUNTRIES || '')
+            .split(',')
+            .map((value) => value.trim()),
+        TWILIO_NUMBER_COUNTRY || 'US',
+        'US',
+        'GB',
+        'CA'
+    ]);
 
 const listOwnedTwilioNumbers = async ({ limit }) => {
     if (!twilioEnabled()) {
@@ -219,7 +246,7 @@ const isNumberAssignedToAnotherUser = async ({ userId, phoneNumber, transaction 
     return Boolean(existingUser);
 };
 
-const findAvailableDemoNumberForUser = async ({ user, requestedCountry, transaction }) => {
+const findAvailableDemoNumberForUser = async ({ user, requestedCountry, allowAnyCountry = false, transaction }) => {
     const candidates = await DemoNumber.findAll({
         where: { status: 'available' },
         order: [['id', 'ASC']],
@@ -236,7 +263,7 @@ const findAvailableDemoNumberForUser = async ({ user, requestedCountry, transact
     });
 
     for (const candidate of prioritized) {
-        if (requestedCountry && resolveDemoCountryCode(candidate) !== requestedCountry) {
+        if (!allowAnyCountry && requestedCountry && resolveDemoCountryCode(candidate) !== requestedCountry) {
             continue;
         }
 
@@ -291,7 +318,7 @@ const attachDemoNumberToUser = async ({ user, demoNumber, requestedCountry, regi
     };
 };
 
-const assignExistingDemoNumber = async ({ userId, region, voicePreferences, ttlHours }) =>
+const assignExistingDemoNumber = async ({ userId, region, voicePreferences, ttlHours, allowAnyCountry = false }) =>
     sequelize.transaction(async (transaction) => {
         const user = await User.findByPk(userId, { transaction });
         if (!user) {
@@ -325,6 +352,7 @@ const assignExistingDemoNumber = async ({ userId, region, voicePreferences, ttlH
         const demoNumber = await findAvailableDemoNumberForUser({
             user,
             requestedCountry,
+            allowAnyCountry,
             transaction
         });
 
@@ -355,12 +383,25 @@ const purchaseDemoNumberForUser = async ({ userId, region, voicePreferences, ttl
 
     const requestedCountry = normalizeCountryCode(region || user.countryCode);
     const provisioningService = require('./provisioning.service');
-    const purchase = await provisioningService.purchaseTwilioNumber({
-        country: requestedCountry || undefined
-    });
+    const fallbackCountries = getDemoFallbackCountries(requestedCountry);
+    let purchase = null;
+    let lastError = null;
+
+    for (const country of fallbackCountries) {
+        try {
+            purchase = await provisioningService.purchaseTwilioNumber({
+                country: country || undefined
+            });
+            if (purchase?.phoneNumber) {
+                break;
+            }
+        } catch (error) {
+            lastError = error;
+        }
+    }
 
     if (!purchase?.phoneNumber) {
-        throw new Error('Twilio did not return a purchased demo number.');
+        throw lastError || new Error('Twilio did not return a purchased demo number.');
     }
 
     return sequelize.transaction(async (transaction) => {
@@ -389,7 +430,7 @@ const purchaseDemoNumberForUser = async ({ userId, region, voicePreferences, ttl
             defaults: {
                 phoneNumber: purchase.phoneNumber,
                 providerNumberId: purchase.phoneSid || '',
-                countryCode: requestedCountry || '',
+                countryCode: requestedCountry || normalizeCountryCode(fallbackCountries[0]) || '',
                 status: 'available',
                 metadata: {
                     purchasedForDemo: true,
@@ -434,16 +475,39 @@ const assignDemoNumber = async ({ userId, region, voicePreferences, ttlHours }) 
         return existingAssignment;
     }
 
+    const availableAnyCountryAssignment = await assignExistingDemoNumber({
+        userId,
+        region,
+        voicePreferences,
+        ttlHours,
+        allowAnyCountry: true
+    });
+    if (availableAnyCountryAssignment) {
+        return availableAnyCountryAssignment;
+    }
+
     const user = await User.findByPk(userId, { attributes: ['id', 'countryCode'] });
     const requestedCountry = normalizeCountryCode(region || user?.countryCode);
+    const fallbackCountries = getDemoFallbackCountries(requestedCountry);
     await syncOwnedTwilioDemoNumbers({
         force: true,
-        countries: requestedCountry ? [requestedCountry] : undefined
+        countries: fallbackCountries.length > 0 ? fallbackCountries : undefined
     });
 
     const syncedAssignment = await assignExistingDemoNumber({ userId, region, voicePreferences, ttlHours });
     if (syncedAssignment) {
         return syncedAssignment;
+    }
+
+    const syncedAnyCountryAssignment = await assignExistingDemoNumber({
+        userId,
+        region,
+        voicePreferences,
+        ttlHours,
+        allowAnyCountry: true
+    });
+    if (syncedAnyCountryAssignment) {
+        return syncedAnyCountryAssignment;
     }
 
     return purchaseDemoNumberForUser({ userId, region, voicePreferences, ttlHours });
