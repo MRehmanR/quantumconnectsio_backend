@@ -10,10 +10,6 @@ const {
     generateRetellPrompt,
     importWebsiteKnowledgeBase
 } = require('../controllers/auth.controller');
-const {
-    assignDemoNumber,
-    getActiveDemoNumber
-} = require('../controllers/numbers.controller');
 const { authenticate, requireActiveSubscription } = require('../middleware/auth.middleware');
 
 const router = express.Router();
@@ -25,8 +21,6 @@ router.post('/forgot-password', forgotPassword);
 router.post('/reset-password', resetPassword);
 router.get('/available-numbers', authenticate, requireActiveSubscription, getAvailableBusinessNumbers);
 router.post('/import-website-knowledge', authenticate, requireActiveSubscription, importWebsiteKnowledgeBase);
-router.post('/assign-demo', authenticate, requireActiveSubscription, assignDemoNumber);
-router.get('/active-demo', authenticate, requireActiveSubscription, getActiveDemoNumber);
 router.post('/provision-number', authenticate, requireActiveSubscription, provisionBusinessNumber);
 router.post('/provision-retell-agent', authenticate, requireActiveSubscription, provisionRetellVoiceAgent);
 router.post('/generate-retell-prompt', authenticate, requireActiveSubscription, generateRetellPrompt);

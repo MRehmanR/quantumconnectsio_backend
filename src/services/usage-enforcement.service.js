@@ -2,7 +2,7 @@ const { sequelize } = require('../config/db');
 const { UsageCycle, User } = require('../models');
 
 const PLAN_LIMITS = {
-    Trial: { includedCalls: 50, concurrentCalls: 2 },
+    Free: { includedCalls: 0, concurrentCalls: 0 },
     Rise: { includedCalls: 150, concurrentCalls: 5 },
     Elevate: { includedCalls: 500, concurrentCalls: 20 },
     Apex: { includedCalls: 1100, concurrentCalls: 50 },

@@ -1,56 +1,7 @@
 const User = require('../models/user.model');
-const Invoice = require('../models/invoice.model');
 const crypto = require('crypto');
 const { verifyToken } = require('../utils/jwt');
 const { AUTOMATION_SHARED_KEY } = require('../config/env');
-
-const TRIAL_DAYS = 7;
-const PAID_PLANS = new Set(['Rise', 'Elevate', 'Apex', 'Starter', 'Core', 'Pro', 'Scale']);
-
-const ensureTrialAccess = async (user) => {
-    if (!user || user.role !== 'user') {
-        return { allowed: true };
-    }
-
-    const trialEndsAt = new Date(user.createdAt);
-    trialEndsAt.setDate(trialEndsAt.getDate() + TRIAL_DAYS);
-    const trialExpired = new Date() > trialEndsAt;
-
-    if (!trialExpired) {
-        if (user.status === 'Suspended') {
-            user.status = 'Active';
-            await user.save();
-        }
-        return { allowed: true };
-    }
-
-    const hasPaidInvoice = Boolean(await Invoice.findOne({
-        where: {
-            userId: user.id,
-            status: 'Paid'
-        },
-        attributes: ['id']
-    }));
-
-    const hasPaidPlan = PAID_PLANS.has(String(user.plan || ''));
-    if (hasPaidInvoice || hasPaidPlan) {
-        if (user.status === 'Suspended') {
-            user.status = 'Active';
-            await user.save();
-        }
-        return { allowed: true };
-    }
-
-    if (user.status !== 'Suspended') {
-        user.status = 'Suspended';
-        await user.save();
-    }
-
-    return {
-        allowed: false,
-        message: 'Your 7-day trial has ended. Please purchase a plan to continue.'
-    };
-};
 
 const authenticate = async (req, res, next) => {
     const authHeader = req.headers.authorization || '';
@@ -90,11 +41,6 @@ const requireActiveSubscription = async (req, res, next) => {
             return res.status(401).json({ success: false, message: 'Invalid token user' });
         }
 
-        const trialAccess = await ensureTrialAccess(user);
-        if (!trialAccess.allowed) {
-            return res.status(402).json({ success: false, message: trialAccess.message });
-        }
-
         req.authenticatedUser = user;
         return next();
     } catch (error) {
@@ -114,13 +60,6 @@ const extractAuthUser = async (req) => {
     const user = await User.findByPk(decoded.id);
     if (!user) {
         return null;
-    }
-
-    const trialAccess = await ensureTrialAccess(user);
-    if (!trialAccess.allowed) {
-        const error = new Error(trialAccess.message || 'Trial expired');
-        error.code = 'TRIAL_EXPIRED';
-        throw error;
     }
 
     return {
@@ -161,10 +100,7 @@ const authenticateOrAutomationKey = async (req, res, next) => {
             req.user = user;
             return next();
         }
-    } catch (error) {
-        if (error?.code === 'TRIAL_EXPIRED') {
-            return res.status(402).json({ success: false, message: error.message });
-        }
+    } catch (_error) {
         // Fall through to automation key validation.
     }
 

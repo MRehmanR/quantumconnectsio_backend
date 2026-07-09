@@ -741,7 +741,7 @@ const listAvailableNumbersForUser = async ({ userId, country, areaCode, contains
     return available.phoneNumbers || [];
 };
 
-const createRetellAgent = async ({ businessName, inboundNumber, ownerPhone, ownerName, customPrompt }) => {
+const createRetellAgent = async ({ businessName, inboundNumber, ownerPhone, ownerName, customPrompt, voiceId: requestedVoiceId }) => {
     if (!RETELL_API_KEY) {
         return {
             skipped: true,
@@ -754,7 +754,7 @@ const createRetellAgent = async ({ businessName, inboundNumber, ownerPhone, owne
     const normalizedConfiguredPath = configuredPath.startsWith('/') ? configuredPath : `/${configuredPath}`;
 
     const responseEngineType = String(RETELL_RESPONSE_ENGINE_TYPE || 'retell-llm').trim().toLowerCase();
-    const voiceId = String(RETELL_VOICE_ID || '').trim();
+    const voiceId = String(requestedVoiceId || RETELL_VOICE_ID || '').trim();
     const configuredLlmId = String(RETELL_LLM_ID || '').trim();
     const conversationFlowId = String(RETELL_CONVERSATION_FLOW_ID || '').trim();
 
@@ -1086,7 +1086,8 @@ const createAndPersistRetellAgent = async (user, options = {}) => {
         inboundNumber: user.inboundNumber,
         ownerPhone: user.ownerPhone,
         ownerName: user.username,
-        customPrompt: options.customPrompt
+        customPrompt: options.customPrompt,
+        voiceId: options.voiceId
     });
 
     if (!retell?.retellAgentId) {
@@ -1156,7 +1157,8 @@ const provisionRetellAgentForUser = async (userId, options = {}) => {
 
         if (!user.retellAgentId || force) {
             await createAndPersistRetellAgent(user, {
-                customPrompt
+                customPrompt,
+                voiceId: options?.voiceId
             });
         }
 
@@ -1190,7 +1192,8 @@ const provisionRetellAgentForUser = async (userId, options = {}) => {
                 await user.save();
 
                 await createAndPersistRetellAgent(user, {
-                    customPrompt
+                    customPrompt,
+                    voiceId: options?.voiceId
                 });
 
                 await bindRetellNumberToAgent({
@@ -1376,7 +1379,8 @@ const provisionForUser = async (userId, options = {}) => {
                       inboundNumber: user.inboundNumber,
                       ownerPhone: user.ownerPhone,
                       ownerName: user.username,
-                      customPrompt: options?.customPrompt
+                      customPrompt: options?.customPrompt,
+                      voiceId: options?.voiceId
                   });
 
         if (retell.retellAgentId) {

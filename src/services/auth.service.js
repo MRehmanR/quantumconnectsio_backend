@@ -1,11 +1,8 @@
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
-const { Op } = require('sequelize');
 const User = require('../models/user.model');
-const Invoice = require('../models/invoice.model');
 const { generateToken } = require('../utils/jwt');
 const provisioningService = require('./provisioning.service');
-const demoNumberService = require('./demo-number.service');
 const { normalizePhone, getCountryHintFromE164 } = require('../utils/phone');
 const { resolveCountryFromPayload, normalizeCountryCode } = require('../utils/country');
 const { FRONTEND_APP_URL, RESET_PASSWORD_TOKEN_TTL_MIN } = require('../config/env');
@@ -48,49 +45,13 @@ const getUniqueUsername = async (requestedUsername) => {
     return `${base.slice(0, 36)} ${Date.now().toString().slice(-10)}`.slice(0, 50);
 };
 
-const TRIAL_DAYS = 7;
 const PAID_PLANS = new Set(['Rise', 'Elevate', 'Apex', 'Starter', 'Core', 'Pro', 'Scale']);
 
-const getTrialInfo = async (user) => {
-    const createdAt = new Date(user.createdAt);
-    const trialEndsAt = new Date(createdAt);
-    trialEndsAt.setDate(trialEndsAt.getDate() + TRIAL_DAYS);
-
-    const now = new Date();
-    const hasPaidInvoice = Boolean(await Invoice.findOne({
-        where: {
-            userId: user.id,
-            status: 'Paid'
-        },
-        attributes: ['id']
-    }));
-
-    const hasPaidPlan = PAID_PLANS.has(String(user.plan || ''));
-    const trialExpired = now > trialEndsAt;
-
-    return {
-        hasPaidInvoice,
-        hasPaidPlan,
-        trialExpired,
-        trialEndsAt
-    };
-};
-
-const ensureTrialDemoNumber = async (user) => {
-    if (!user || user.role !== 'user' || user.inboundNumber) {
-        return;
-    }
-
-    try {
-        await demoNumberService.assignDemoNumber({
-            userId: user.id,
-            region: user.countryCode || undefined
-        });
-        await user.reload();
-    } catch (error) {
-        user.provisioningStatus = 'pending';
-        user.provisioningError = String(error?.message || 'Demo number assignment failed').slice(0, 240);
-        await user.save();
+const ensurePaidPlan = (user) => {
+    if (!PAID_PLANS.has(String(user?.plan || ''))) {
+        const error = new Error('Please purchase a paid plan before provisioning a business number or Retell voice agent.');
+        error.code = 'PAID_PLAN_REQUIRED';
+        throw error;
     }
 };
 
@@ -158,24 +119,12 @@ const authService = {
             timezone: userData.timezone || 'UTC',
             countryCode,
             billingAnniversaryDay: Number(userData.billingAnniversaryDay || new Date().getDate()),
+            plan: 'Free',
+            provisioningStatus: requestedInboundNumber ? 'pending' : 'manual_required',
             referralCode,
             referredByCode,
             referredByMethod
         });
-
-        if (!user.inboundNumber) {
-            try {
-                await demoNumberService.assignDemoNumber({
-                    userId: user.id,
-                    region: countryCode || undefined
-                });
-                await user.reload();
-            } catch (error) {
-                user.provisioningStatus = 'pending';
-                user.provisioningError = String(error?.message || 'Demo number assignment failed').slice(0, 240);
-                await user.save();
-            }
-        }
 
         if (user.inboundNumber && !user.retellAgentId) {
             try {
@@ -185,7 +134,7 @@ const authService = {
                 await user.reload();
                 if (!user.provisioningError) {
                     user.provisioningStatus = 'manual_required';
-                    user.provisioningError = String(error?.message || 'Demo voice agent assignment failed').slice(0, 240);
+                    user.provisioningError = String(error?.message || 'Voice agent assignment failed').slice(0, 240);
                     await user.save();
                 }
             }
@@ -207,6 +156,7 @@ const authService = {
         if (user.role !== 'user') {
             throw new Error('Only client users can provision business numbers');
         }
+        ensurePaidPlan(user);
 
         const provisioned = await provisioningService.provisionForUser(user.id);
 
@@ -260,6 +210,7 @@ const authService = {
         if (user.role !== 'user') {
             throw new Error('Only client users can provision business numbers');
         }
+        ensurePaidPlan(user);
 
         const provisioned = await provisioningService.provisionForUser(user.id, {
             phoneNumber,
@@ -296,13 +247,14 @@ const authService = {
         if (user.role !== 'user') {
             throw new Error('Only client users can import website knowledge');
         }
+        ensurePaidPlan(user);
 
         return provisioningService.importWebsiteKnowledgeBaseForUser(user.id, {
             websiteUrl
         });
     },
 
-    provisionRetellVoiceAgent: async ({ actor, force, customPrompt }) => {
+    provisionRetellVoiceAgent: async ({ actor, force, customPrompt, voiceId }) => {
         if (!actor?.id) {
             throw new Error('Unauthorized');
         }
@@ -315,10 +267,12 @@ const authService = {
         if (user.role !== 'user') {
             throw new Error('Only client users can provision Retell voice agent');
         }
+        ensurePaidPlan(user);
 
         const provisioned = await provisioningService.provisionRetellAgentForUser(user.id, {
             force: Boolean(force),
-            customPrompt
+            customPrompt,
+            voiceId
         });
 
         const freshUser = await User.findByPk(user.id);
@@ -411,26 +365,7 @@ const authService = {
             throw new Error('Invalid credentials');
         }
 
-        if (user.role === 'user') {
-            const trialInfo = await getTrialInfo(user);
-            if (trialInfo.trialExpired && !trialInfo.hasPaidInvoice && !trialInfo.hasPaidPlan) {
-                if (user.status !== 'Suspended') {
-                    user.status = 'Suspended';
-                    await user.save();
-                }
-            } else if (user.status === 'Suspended') {
-                user.status = 'Active';
-                await user.save();
-            }
-        }
-
-        await ensureTrialDemoNumber(user);
-
         const token = generateToken({ id: user.id, role: user.role, email: user.email });
-
-        const trialInfo = user.role === 'user'
-            ? await getTrialInfo(user)
-            : { hasPaidInvoice: false, hasPaidPlan: false, trialExpired: false, trialEndsAt: null };
 
         return {
             token,
@@ -453,9 +388,9 @@ const authService = {
                 referralCode: user.referralCode,
                 referralBonusMinutes: user.referralBonusMinutes,
                 referralBonusExpiresAt: user.referralBonusExpiresAt,
-                trialEndsAt: trialInfo.trialEndsAt ? trialInfo.trialEndsAt.toISOString() : null,
-                trialExpired: Boolean(trialInfo.trialExpired)
-            }
+                redirectTo: '/dashboard'
+            },
+            redirectTo: '/dashboard'
         };
     }
 };

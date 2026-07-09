@@ -54,14 +54,8 @@ module.exports = {
     SMTP_USER: process.env.SMTP_USER || '',
     SMTP_PASS: process.env.SMTP_PASS || '',
     SMTP_FROM: process.env.SMTP_FROM || '',
+    DEMO_NOTIFICATION_EMAIL: process.env.DEMO_NOTIFICATION_EMAIL || process.env.ADMIN_EMAIL || '',
     STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY || '',
     STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET || '',
-    STRIPE_CURRENCY: process.env.STRIPE_CURRENCY || 'gbp',
-    DEMO_NUMBERS: process.env.DEMO_NUMBERS || '',
-    TWILIO_DEMO_SYNC_ENABLED: process.env.TWILIO_DEMO_SYNC_ENABLED || 'false',
-    TWILIO_DEMO_SYNC_COUNTRIES: process.env.TWILIO_DEMO_SYNC_COUNTRIES || '',
-    TWILIO_DEMO_MIN_IDLE_DAYS: Number(process.env.TWILIO_DEMO_MIN_IDLE_DAYS || 30),
-    TWILIO_DEMO_IMPORT_LIMIT: Number(process.env.TWILIO_DEMO_IMPORT_LIMIT || 50),
-    DEMO_NUMBER_TTL_HOURS: Number(process.env.DEMO_NUMBER_TTL_HOURS || 168),
-    DEMO_NUMBER_RECLAIM_INTERVAL_MIN: Number(process.env.DEMO_NUMBER_RECLAIM_INTERVAL_MIN || 15)
+    STRIPE_CURRENCY: process.env.STRIPE_CURRENCY || 'gbp'
 };

@@ -160,7 +160,7 @@ const knowledgeBaseSeed = [
 ];
 
 const plansSeed = [
-    { name: 'Trial', price: 0, callsLimit: 50, concurrentLimit: 2 },
+    { name: 'Free', price: 0, callsLimit: 0, concurrentLimit: 0 },
     { name: 'Starter', price: 29, callsLimit: 75, concurrentLimit: 5 },
     { name: 'Core', price: 79, callsLimit: 200, concurrentLimit: 10 },
     { name: 'Pro', price: 149, callsLimit: 500, concurrentLimit: 20 },

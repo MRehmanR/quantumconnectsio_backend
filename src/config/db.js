@@ -86,23 +86,37 @@ const ensureDefaultAdmin = async () => {
     console.log('Default admin user created from environment settings.');
 };
 
-const seedDemoNumbersFromEnv = async () => {
-    try {
-        const demoNumberService = require('../services/demo-number.service');
-        const result = await demoNumberService.seedDemoNumbersFromEnv();
-        if (result.configured > 0) {
-            console.log(`Demo number inventory checked: ${result.configured} configured, ${result.seeded} added.`);
-        }
-        if (result.twilioSync?.synced) {
-            console.log(
-                `Twilio demo pool sync checked ${result.twilioSync.checked} owned numbers: ${result.twilioSync.imported} imported, ${result.twilioSync.updated} updated, ${result.twilioSync.skipped} skipped.`
-            );
-        } else if (result.twilioSync?.reason && result.twilioSync.reason !== 'disabled') {
-            console.warn(`Twilio demo pool sync skipped: ${result.twilioSync.reason}.`);
-        }
-    } catch (error) {
-        console.warn(`Demo number inventory seed skipped: ${error.message}`);
+const ensurePostgresEnumValues = async () => {
+    if (DB_DIALECT === 'sqlite') {
+        return;
     }
+
+    await sequelize.query(`
+        DO $$
+        BEGIN
+            ALTER TYPE "enum_users_plan" ADD VALUE IF NOT EXISTS 'Free';
+        EXCEPTION
+            WHEN undefined_object THEN NULL;
+        END $$;
+    `);
+
+    await sequelize.query(`
+        DO $$
+        BEGIN
+            ALTER TABLE "users" ALTER COLUMN "plan" SET DEFAULT 'Free';
+        EXCEPTION
+            WHEN undefined_table OR undefined_column THEN NULL;
+        END $$;
+    `);
+
+    await sequelize.query(`
+        DO $$
+        BEGIN
+            UPDATE "users" SET "plan" = 'Free' WHERE "plan"::text = ('Tr' || 'ial');
+        EXCEPTION
+            WHEN undefined_table OR invalid_text_representation THEN NULL;
+        END $$;
+    `);
 };
 
 const ensureSchemaColumns = async () => {
@@ -307,6 +321,7 @@ const ensureSchemaColumns = async () => {
 
 const connectDB = async () => {
     await sequelize.authenticate();
+    await ensurePostgresEnumValues();
 
     if (DB_DIALECT === 'sqlite' && DB_SYNC_ALTER === 'true') {
         const [backupTables] = await sequelize.query(
@@ -321,7 +336,6 @@ const connectDB = async () => {
     await sequelize.sync({ alter: DB_SYNC_ALTER === 'true' });
     await ensureSchemaColumns();
     await ensureDefaultAdmin();
-    await seedDemoNumbersFromEnv();
 };
 
 module.exports = {

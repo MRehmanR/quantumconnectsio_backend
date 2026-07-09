@@ -192,6 +192,68 @@ exports.createAppointment = async (req, res) => {
     }
 };
 
+exports.createDemoBooking = async (req, res) => {
+    try {
+        const {
+            customerName,
+            customerPhone,
+            customerEmail,
+            businessName,
+            businessDetails,
+            purchasePurpose,
+            industry,
+            callVolume,
+            challenge,
+            jobValue,
+            currentSystem,
+            timeline,
+            timezone,
+            geoLocation,
+            time
+        } = req.body || {};
+
+        const data = await dashboardDataService.createDemoBooking({
+            customerName,
+            customerPhone,
+            customerEmail,
+            businessName,
+            businessDetails,
+            purchasePurpose,
+            industry,
+            callVolume,
+            challenge,
+            jobValue,
+            currentSystem,
+            timeline,
+            timezone,
+            geoLocation,
+            time
+        });
+
+        return res.status(201).json({
+            success: true,
+            message: 'Demo appointment booked successfully',
+            data
+        });
+    } catch (error) {
+        if (error.code === 'INVALID_DEMO_BOOKING_PAYLOAD' || error.code === 'INVALID_TIME_FORMAT') {
+            return res.status(400).json({ success: false, message: error.message });
+        }
+
+        if (error.code === 'SLOT_UNAVAILABLE') {
+            return res.status(409).json({
+                success: false,
+                message: 'This demo time slot is not available. Please choose another slot.',
+                data: {
+                    alternatives: error.alternatives || []
+                }
+            });
+        }
+
+        return res.status(500).json({ success: false, message: error.message || 'Failed to book demo appointment' });
+    }
+};
+
 exports.getAppointmentAvailability = async (req, res) => {
     try {
         const data = await dashboardDataService.getAppointmentAvailability({
@@ -436,7 +498,21 @@ exports.purchasePlan = async (req, res) => {
             return res.status(400).json({ success: false, message: 'planName is required' });
         }
 
-        const data = await dashboardDataService.purchasePlan({ email, planName, actor: req.user });
+        const data = await dashboardDataService.purchasePlan({
+            email,
+            planName,
+            actor: req.user,
+            provisioningOptions: {
+                phoneNumber: req.body?.phoneNumber,
+                country: req.body?.country,
+                areaCode: req.body?.areaCode,
+                customPrompt: req.body?.customPrompt,
+                businessDetails: req.body?.businessDetails,
+                purchasePurpose: req.body?.purchasePurpose,
+                websiteUrl: req.body?.websiteUrl,
+                voiceId: req.body?.voiceId
+            }
+        });
         return res.status(201).json({ success: true, data });
     } catch (error) {
         return res.status(400).json({ success: false, message: error.message || 'Failed to purchase plan' });
@@ -474,7 +550,17 @@ exports.createStripeCheckoutSession = async (req, res) => {
             email,
             planName,
             actor: req.user,
-            origin: req.headers.origin
+            origin: req.headers.origin,
+            provisioningOptions: {
+                phoneNumber: req.body?.phoneNumber,
+                country: req.body?.country,
+                areaCode: req.body?.areaCode,
+                customPrompt: req.body?.customPrompt,
+                businessDetails: req.body?.businessDetails,
+                purchasePurpose: req.body?.purchasePurpose,
+                websiteUrl: req.body?.websiteUrl,
+                voiceId: req.body?.voiceId
+            }
         });
 
         return res.status(200).json({ success: true, data });

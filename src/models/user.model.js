@@ -103,7 +103,7 @@ const User = sequelize.define(
         plan: {
             type: DataTypes.STRING,
             allowNull: false,
-            defaultValue: 'Trial'
+            defaultValue: 'Free'
         },
         status: {
             type: DataTypes.ENUM('Active', 'Suspended'),

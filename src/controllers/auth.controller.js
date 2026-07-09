@@ -71,9 +71,7 @@ exports.register = async (req, res) => {
                 referredByMethod: user.referredByMethod,
                 referralBonusMinutes: user.referralBonusMinutes,
                 referralBonusExpiresAt: user.referralBonusExpiresAt,
-                trialEndsAt: user.createdAt
-                    ? new Date(new Date(user.createdAt).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString()
-                    : null
+                redirectTo: '/dashboard'
             }
         });
     } catch (error) {
@@ -146,7 +144,8 @@ exports.provisionRetellVoiceAgent = async (req, res) => {
         const data = await authService.provisionRetellVoiceAgent({
             actor: req.user,
             force: req.body?.force,
-            customPrompt: req.body?.customPrompt
+            customPrompt: req.body?.customPrompt,
+            voiceId: req.body?.voiceId
         });
         return res.status(200).json({
             success: true,

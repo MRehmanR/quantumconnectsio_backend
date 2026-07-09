@@ -18,7 +18,6 @@ const {
     EscalationLog,
     KbQueryLog,
     DailySummary,
-    DemoNumber
 } = require('../models');
 const { defaultFeatureToggles } = require('../constants/feature-toggles');
 const {
@@ -31,18 +30,23 @@ const {
     STRIPE_CURRENCY,
     RETELL_API_KEY,
     RETELL_API_BASE_URL,
-    RETELL_UPDATE_AGENT_PATH
+    RETELL_UPDATE_AGENT_PATH,
+    SMTP_FROM,
+    DEMO_NOTIFICATION_EMAIL
 } = require('../config/env');
 const provisioningService = require('./provisioning.service');
-const demoNumberService = require('./demo-number.service');
 const { normalizePhone, getCountryHintFromE164 } = require('../utils/phone');
 const { resolveCountryFromPayload, normalizeCountryCode } = require('../utils/country');
+const {
+    sendDemoBookingConfirmationEmail,
+    sendDemoBookingNotificationEmail
+} = require('../utils/email');
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 const timeFormatter = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' });
 
 const defaultPlans = [
-    { name: 'Trial', price: 0, callsLimit: 50, concurrentLimit: 2 },
+    { name: 'Free', price: 0, callsLimit: 0, concurrentLimit: 0 },
     { name: 'Rise', price: 99, callsLimit: 150, concurrentLimit: 5 },
     { name: 'Elevate', price: 249, callsLimit: 500, concurrentLimit: 20 },
     { name: 'Apex', price: 499, callsLimit: 1100, concurrentLimit: 50 }
@@ -314,7 +318,7 @@ const applyReferralAwardIfEligible = async (user) => {
     return referralAward;
 };
 
-const finalizePaidPlanPurchase = async ({ user, plan, paymentReference = '' }) => {
+const finalizePaidPlanPurchase = async ({ user, plan, paymentReference = '', provisioningOptions = {} }) => {
     if (paymentReference) {
         const existingInvoice = await Invoice.findOne({ where: { paymentReference } });
         if (existingInvoice) {
@@ -351,30 +355,15 @@ const finalizePaidPlanPurchase = async ({ user, plan, paymentReference = '' }) =
 
     if (user.role === 'user') {
         try {
-            const assignedDemoNumber = await DemoNumber.findOne({
-                where: {
-                    assignedToUserId: user.id,
-                    status: 'assigned'
-                },
-                attributes: ['id', 'phoneNumber', 'providerNumberId']
-            });
-            const currentNumberIsDemo =
-                Boolean(assignedDemoNumber?.phoneNumber) &&
-                String(user.inboundNumber || '').trim() === String(assignedDemoNumber.phoneNumber || '').trim();
-            const currentSidIsDemo =
-                Boolean(assignedDemoNumber?.providerNumberId) &&
-                String(user.twilioPhoneNumberSid || '').trim() === String(assignedDemoNumber.providerNumberId || '').trim();
-            const shouldReplaceDemoNumber = Boolean(assignedDemoNumber) && (currentNumberIsDemo || currentSidIsDemo);
-
             numberProvisioning = await provisioningService.provisionForUser(user.id, {
-                country: user.countryCode || undefined,
-                autoAssign: true,
-                forceTwilioPurchase: shouldReplaceDemoNumber
+                phoneNumber: provisioningOptions.phoneNumber,
+                country: provisioningOptions.country || user.countryCode || undefined,
+                areaCode: provisioningOptions.areaCode,
+                customPrompt: provisioningOptions.customPrompt || provisioningOptions.businessDetails || provisioningOptions.purchasePurpose,
+                websiteUrl: provisioningOptions.websiteUrl,
+                voiceId: provisioningOptions.voiceId,
+                autoAssign: true
             });
-
-            if (assignedDemoNumber && (shouldReplaceDemoNumber || !currentNumberIsDemo)) {
-                await demoNumberService.releaseAssignedDemoForUser({ userId: user.id });
-            }
         } catch (error) {
             const freshUser = await User.findByPk(user.id);
             numberProvisioning = {
@@ -511,6 +500,46 @@ const formatMinutesToHHmm = (totalMinutes) => {
     const hours = Math.floor(totalMinutes / 60);
     const minutes = totalMinutes % 60;
     return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+};
+
+const isValidTimeZone = (timezone) => {
+    try {
+        new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format(new Date());
+        return true;
+    } catch (_error) {
+        return false;
+    }
+};
+
+const normalizeTimeZone = (timezone) => {
+    const candidate = String(timezone || '').trim();
+    return candidate && isValidTimeZone(candidate) ? candidate : 'UTC';
+};
+
+const getYmdPartsInTimeZone = (date, timezone) => {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).formatToParts(date);
+
+    const map = parts.reduce((acc, part) => {
+        acc[part.type] = part.value;
+        return acc;
+    }, {});
+
+    return {
+        year: Number(map.year),
+        month: Number(map.month),
+        day: Number(map.day)
+    };
+};
+
+const getNextLocalDateYmd = (timezone) => {
+    const today = getYmdPartsInTimeZone(new Date(), timezone);
+    const nextUtc = new Date(Date.UTC(today.year, today.month - 1, today.day + 1));
+    return nextUtc.toISOString().slice(0, 10);
 };
 
 const getBookedSlotSetForDate = async (date, userId) => {
@@ -668,15 +697,6 @@ const getProfile = async ({ actor }) => {
         throw new Error('User not found');
     }
 
-    const demoNumber = await DemoNumber.findOne({
-        where: {
-            assignedToUserId: user.id,
-            status: {
-                [Op.in]: ['assigned', 'promoted']
-            }
-        }
-    });
-
     return {
         id: String(user.id),
         username: user.username,
@@ -691,15 +711,7 @@ const getProfile = async ({ actor }) => {
         hasRetellSipTrunkAuthPassword: Boolean(user.retellSipTrunkAuthPassword),
         retellAgentId: user.retellAgentId || '',
         provisioningStatus: user.provisioningStatus || 'pending',
-        provisioningError: user.provisioningError || '',
-        demoNumber: demoNumber
-            ? {
-                  id: demoNumber.id,
-                  phoneNumber: demoNumber.phoneNumber,
-                  status: demoNumber.status,
-                  expiresAt: demoNumber.expiresAt
-              }
-            : null
+        provisioningError: user.provisioningError || ''
     };
 };
 
@@ -1117,23 +1129,10 @@ const getDashboardOverview = async ({ actor, range = 'weekly', startDate = '', e
         })
     ]);
 
-    if (!isAdmin && user && !user.inboundNumber) {
-        try {
-            await demoNumberService.assignDemoNumber({
-                userId: user.id,
-                region: user.countryCode || undefined
-            });
-            await user.reload();
-        } catch (error) {
-            user.provisioningStatus = 'pending';
-            user.provisioningError = String(error?.message || 'Demo number assignment failed').slice(0, 240);
-            await user.save();
-        }
-    }
-
-    const activePlanName = user?.plan || 'Trial';
+    const activePlanName = user?.plan || 'Free';
     const activePlan = await SubscriptionPlan.findOne({ where: { name: activePlanName } });
-    const callsLimit = Number(activePlan?.callsLimit || 50);
+    const isFreePlan = activePlanName === 'Free' || Number(activePlan?.price || 0) <= 0;
+    const callsLimit = Number(activePlan?.callsLimit || 0);
     const callsUsed = calls.length;
     const callsAnswered = calls.filter((call) => String(call.status || '').toLowerCase() === 'completed').length;
     const totalRevenueGenerated = Number(
@@ -1189,7 +1188,7 @@ const getDashboardOverview = async ({ actor, range = 'weekly', startDate = '', e
         totalRevenueGenerated,
         totalCallsAnswered: callsAnswered,
         currentPlan: activePlanName,
-        nextBillingDate: dateFormatter.format(new Date(new Date().setDate(new Date().getDate() + 30))),
+        nextBillingDate: isFreePlan ? '' : dateFormatter.format(new Date(new Date().setDate(new Date().getDate() + 30))),
         businessName: user?.businessName || '',
         businessNumber: user?.inboundNumber || '',
         extractedKnowledgePreview,
@@ -1542,6 +1541,202 @@ const deleteKnowledgeBaseEntry = async (id, { actor } = {}) => {
     await KnowledgeBaseAttachment.destroy({ where: { knowledgeBaseEntryId: entry.id } });
     const deleted = await KnowledgeBaseEntry.destroy({ where: { id: entry.id } });
     return deleted > 0;
+};
+
+const createDemoBooking = async ({
+    customerName,
+    customerPhone,
+    customerEmail,
+    businessName,
+    businessDetails,
+    purchasePurpose,
+    industry,
+    callVolume,
+    challenge,
+    jobValue,
+    currentSystem,
+    timeline,
+    timezone,
+    geoLocation,
+    time
+}) => {
+    const normalizedCustomerName = String(customerName || '').trim();
+    const normalizedBusinessName = String(businessName || '').trim();
+    const normalizedCustomerEmail = String(customerEmail || '').trim().toLowerCase();
+    const selectedTimezone = normalizeTimeZone(timezone || geoLocation?.timezone || geoLocation?.timeZone);
+    const requestedMinutes = parseTimeToMinutes(time);
+
+    if (!normalizedCustomerName || !normalizedBusinessName || !normalizedCustomerEmail || requestedMinutes === null) {
+        const payloadError = new Error('customerName, customerEmail, businessName and a valid time are required');
+        payloadError.code = 'INVALID_DEMO_BOOKING_PAYLOAD';
+        throw payloadError;
+    }
+
+    const appointmentDate = getNextLocalDateYmd(selectedTimezone);
+    const appointmentTime = formatMinutesToHHmm(requestedMinutes);
+
+    const existingAtSlot = await Appointment.findOne({
+        where: {
+            userId: null,
+            appointmentDate,
+            appointmentTime,
+            type: 'Live Demo',
+            status: {
+                [Op.in]: ['Pending', 'Confirmed']
+            }
+        },
+        order: [['createdAt', 'DESC']]
+    });
+
+    if (existingAtSlot) {
+        const bookedSlotSet = new Set(
+            (await Appointment.findAll({
+                where: {
+                    userId: null,
+                    appointmentDate,
+                    type: 'Live Demo',
+                    status: {
+                        [Op.in]: ['Pending', 'Confirmed']
+                    }
+                }
+            }))
+                .map((appointment) => parseTimeToMinutes(appointment.appointmentTime))
+                .filter((value) => value !== null)
+        );
+        const allSlots = generateDailySlots({});
+        const availableSlots = allSlots.filter((slot) => !bookedSlotSet.has(slot));
+
+        const slotUnavailableError = new Error('Requested demo time slot is not available');
+        slotUnavailableError.code = 'SLOT_UNAVAILABLE';
+        slotUnavailableError.alternatives = suggestAlternativeSlots({
+            requestedMinutes,
+            availableMinutes: availableSlots,
+            maxSuggestions: 5
+        });
+        throw slotUnavailableError;
+    }
+
+    const customerPhoneRaw = String(customerPhone || '').trim();
+    const normalizedCustomerPhone = normalizePhone(customerPhoneRaw, {});
+    const safeCustomerPhone = normalizedCustomerPhone.ok ? normalizedCustomerPhone.e164 : customerPhoneRaw;
+
+    const appointment = await Appointment.create({
+        caller: normalizedCustomerName,
+        appointmentDate,
+        appointmentTime,
+        type: 'Live Demo',
+        status: 'Confirmed',
+        userId: null,
+        inboundNumber: ''
+    });
+
+    await AppointmentContact.create({
+        appointmentId: appointment.id,
+        name: normalizedCustomerName,
+        phone: safeCustomerPhone,
+        email: normalizedCustomerEmail
+    });
+
+    const eventPayload = {
+        appointmentId: appointment.id,
+        customerName: normalizedCustomerName,
+        customerPhone: safeCustomerPhone,
+        customerEmail: normalizedCustomerEmail,
+        businessName: normalizedBusinessName,
+        businessDetails: String(businessDetails || '').trim(),
+        purchasePurpose: String(purchasePurpose || '').trim(),
+        industry: String(industry || '').trim(),
+        callVolume: String(callVolume || '').trim(),
+        challenge: String(challenge || '').trim(),
+        jobValue: String(jobValue || '').trim(),
+        currentSystem: String(currentSystem || '').trim(),
+        timeline: String(timeline || '').trim(),
+        timezone: selectedTimezone,
+        geoLocation: geoLocation || null,
+        date: appointmentDate,
+        time: appointmentTime,
+        type: 'Live Demo'
+    };
+
+    await AutomationEvent.create({
+        source: 'system',
+        eventType: 'demo.appointment.booked',
+        idempotencyKey: `demo_booking_${appointment.id}`,
+        tenantEmail: normalizedCustomerEmail,
+        occurredAt: new Date(),
+        payload: eventPayload,
+        status: 'processed',
+        processedAt: new Date()
+    });
+
+    const emailDelivery = {
+        from: SMTP_FROM || '',
+        customerTo: normalizedCustomerEmail,
+        notificationTo: DEMO_NOTIFICATION_EMAIL || '',
+        confirmationSent: false,
+        notificationSent: false,
+        skipped: false,
+        error: ''
+    };
+
+    try {
+        await sendDemoBookingConfirmationEmail({
+            to: normalizedCustomerEmail,
+            booking: eventPayload
+        });
+        emailDelivery.confirmationSent = true;
+
+        if (DEMO_NOTIFICATION_EMAIL) {
+            await sendDemoBookingNotificationEmail({
+                to: DEMO_NOTIFICATION_EMAIL,
+                booking: eventPayload
+            });
+            emailDelivery.notificationSent = true;
+        }
+    } catch (error) {
+        emailDelivery.skipped = error?.code === 'SMTP_NOT_CONFIGURED';
+        emailDelivery.error = String(error?.message || 'Demo booking email failed').slice(0, 240);
+
+        await AutomationEvent.create({
+            source: 'system',
+            eventType: 'demo.appointment.email_failed',
+            idempotencyKey: `demo_booking_email_failed_${appointment.id}_${Date.now()}`,
+            tenantEmail: normalizedCustomerEmail,
+            occurredAt: new Date(),
+            payload: {
+                appointmentId: appointment.id,
+                error: emailDelivery.error,
+                skipped: emailDelivery.skipped,
+                from: emailDelivery.from,
+                customerTo: emailDelivery.customerTo,
+                notificationTo: emailDelivery.notificationTo
+            },
+            status: emailDelivery.skipped ? 'processed' : 'failed',
+            processedAt: new Date()
+        });
+    }
+
+    return {
+        id: String(appointment.id),
+        customerName: normalizedCustomerName,
+        customerPhone: safeCustomerPhone,
+        customerEmail: normalizedCustomerEmail,
+        businessName: normalizedBusinessName,
+        businessDetails: eventPayload.businessDetails,
+        purchasePurpose: eventPayload.purchasePurpose,
+        industry: eventPayload.industry,
+        callVolume: eventPayload.callVolume,
+        challenge: eventPayload.challenge,
+        jobValue: eventPayload.jobValue,
+        currentSystem: eventPayload.currentSystem,
+        timeline: eventPayload.timeline,
+        date: appointment.appointmentDate,
+        time: appointment.appointmentTime,
+        timezone: selectedTimezone,
+        status: appointment.status,
+        type: appointment.type,
+        emailDelivery
+    };
 };
 
 const createAppointment = async ({ customerName, customerPhone, customerEmail, date, time, type, status, tenantEmail, dialedNumber, ownerPhone, actor }) => {
@@ -2185,7 +2380,7 @@ const getBillingInfo = async ({ email, actor } = {}) => {
     ]);
     const invoices = userInvoices.length > 0 ? userInvoices : await Invoice.findAll({ order: [['issuedAt', 'DESC']] });
 
-    const activePlanName = user?.plan || 'Trial';
+    const activePlanName = user?.plan || 'Free';
     const currentPlan = plans.find((plan) => plan.name === activePlanName) || plans[0] || null;
     const hasActiveReferralBonus = Boolean(
         user?.referralBonusExpiresAt && new Date(user.referralBonusExpiresAt) > new Date()
@@ -2204,7 +2399,7 @@ const getBillingInfo = async ({ email, actor } = {}) => {
         callsLimit: currentPlan ? currentPlan.callsLimit : 200,
         nextBillingDate: dateFormatter.format(new Date(new Date().setDate(new Date().getDate() + 30))),
         plans: plans
-            .filter((plan) => plan.name !== 'Trial')
+            .filter((plan) => Number(plan.price) > 0)
             .map((plan) => ({
             name: plan.name,
             price: plan.price,
@@ -2225,7 +2420,7 @@ const getBillingInfo = async ({ email, actor } = {}) => {
     };
 };
 
-const purchasePlan = async ({ email, planName, actor }) => {
+const purchasePlan = async ({ email, planName, actor, provisioningOptions = {} }) => {
     const user = await resolveUserByEmail(email, actor);
     if (!user) {
         throw new Error('User not found for purchase');
@@ -2236,11 +2431,14 @@ const purchasePlan = async ({ email, planName, actor }) => {
     if (!plan) {
         throw new Error('Plan not found');
     }
+    if (Number(plan.price) <= 0) {
+        throw new Error('Please select a paid plan to activate phone number and Retell agent provisioning.');
+    }
 
-    return finalizePaidPlanPurchase({ user, plan });
+    return finalizePaidPlanPurchase({ user, plan, provisioningOptions });
 };
 
-const createStripeCheckoutSession = async ({ email, planName, actor, origin }) => {
+const createStripeCheckoutSession = async ({ email, planName, actor, origin, provisioningOptions = {} }) => {
     const user = await resolveUserByEmail(email, actor);
     if (!user) {
         throw new Error('User not found for checkout');
@@ -2251,15 +2449,8 @@ const createStripeCheckoutSession = async ({ email, planName, actor, origin }) =
     if (!plan) {
         throw new Error('Plan not found');
     }
-
     if (Number(plan.price) <= 0) {
-        const freeResult = await finalizePaidPlanPurchase({ user, plan, paymentReference: `manual_free_${Date.now()}` });
-        return {
-            mode: 'free',
-            url: '',
-            sessionId: '',
-            ...freeResult
-        };
+        throw new Error('Please select a paid plan to activate phone number and Retell agent provisioning.');
     }
 
     const stripe = getStripeClient();
@@ -2288,7 +2479,18 @@ const createStripeCheckoutSession = async ({ email, planName, actor, origin }) =
         metadata: {
             planName: plan.name,
             userId: String(user.id),
-            userEmail: user.email
+            userEmail: user.email,
+            phoneNumber: String(provisioningOptions.phoneNumber || '').slice(0, 80),
+            country: String(provisioningOptions.country || '').slice(0, 8),
+            areaCode: String(provisioningOptions.areaCode || '').slice(0, 20),
+            websiteUrl: String(provisioningOptions.websiteUrl || '').slice(0, 400),
+            voiceId: String(provisioningOptions.voiceId || '').slice(0, 120),
+            customPrompt: String(
+                provisioningOptions.customPrompt ||
+                provisioningOptions.businessDetails ||
+                provisioningOptions.purchasePurpose ||
+                ''
+            ).slice(0, 450)
         },
         success_url: `${frontendBase}/dashboard/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${frontendBase}/dashboard/billing?checkout=cancel`
@@ -2345,7 +2547,15 @@ const confirmStripeCheckoutSession = async ({ sessionId, email, actor }) => {
     const purchaseResult = await finalizePaidPlanPurchase({
         user,
         plan,
-        paymentReference: safeSessionId
+        paymentReference: safeSessionId,
+        provisioningOptions: {
+            phoneNumber: session.metadata?.phoneNumber,
+            country: session.metadata?.country,
+            areaCode: session.metadata?.areaCode,
+            websiteUrl: session.metadata?.websiteUrl,
+            voiceId: session.metadata?.voiceId,
+            customPrompt: session.metadata?.customPrompt
+        }
     });
 
     return {
@@ -2568,7 +2778,7 @@ const getAdminSubscriptions = async () => {
     ]);
 
     const planCounts = users.reduce((acc, user) => {
-        const key = user.plan || 'Trial';
+        const key = user.plan || 'Free';
         acc[key] = (acc[key] || 0) + 1;
         return acc;
     }, {});
@@ -2653,6 +2863,7 @@ module.exports = {
     getKnowledgeBaseEntries,
     createKnowledgeBaseEntry,
     deleteKnowledgeBaseEntry,
+    createDemoBooking,
     createAppointment,
     getAppointmentAvailability,
     updateAppointmentStatus,

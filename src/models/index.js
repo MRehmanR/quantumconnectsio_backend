@@ -18,7 +18,6 @@ const OutboundCall = require('./outbound-call.model');
 const KbQueryLog = require('./kb-query-log.model');
 const AuditLog = require('./audit-log.model');
 const DailySummary = require('./daily-summary.model');
-const DemoNumber = require('./demo-number.model');
 
 module.exports = {
     User,
@@ -41,5 +40,4 @@ module.exports = {
     KbQueryLog,
     AuditLog,
     DailySummary,
-    DemoNumber
 };
