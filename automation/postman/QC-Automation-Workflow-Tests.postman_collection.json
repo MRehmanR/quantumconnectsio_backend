@@ -1,0 +1,491 @@
+{
+  "info": {
+    "name": "QC Multi-Tenant Retell + n8n Integration Tests",
+    "description": "Safe local regression suite for tenant routing, appointment mutations, knowledge queries, and dashboard reflection. Live Retell traffic uses the signed backend endpoints directly; this collection exercises the n8n fallback/orchestration contract.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_postman_id": "3b45fe36-2f5f-46ec-9a0e-38848f4ce320"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "const ts = Date.now();",
+          "const dateAfter = (days) => { const date = new Date(ts); date.setUTCDate(date.getUTCDate() + days); return date.toISOString().slice(0, 10); };",
+          "pm.variables.set('nowIso', new Date(ts).toISOString());",
+          "pm.variables.set('runId', `run_${ts}`);",
+          "pm.variables.set('idempotencyKey', `idem_${ts}`);",
+          "pm.variables.set('callId', `call_${ts}`);",
+          "pm.variables.set('bookingDate', dateAfter(2));",
+          "pm.variables.set('seedDate', dateAfter(3));",
+          "pm.variables.set('rescheduleDate', dateAfter(4));"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "n8nBaseUrl",
+      "value": "http://localhost:5678"
+    },
+    {
+      "key": "backendBaseUrl",
+      "value": "https://backend.example.invalid"
+    },
+    {
+      "key": "automationKey",
+      "value": ""
+    },
+    {
+      "key": "tenantEmail",
+      "value": ""
+    },
+    {
+      "key": "tenantInboundNumber",
+      "value": ""
+    },
+    {
+      "key": "tenantBEmail",
+      "value": ""
+    },
+    {
+      "key": "tenantBInboundNumber",
+      "value": ""
+    },
+    {
+      "key": "unknownTenantEmail",
+      "value": "unregistered-tenant@example.invalid"
+    },
+    {
+      "key": "unknownInboundNumber",
+      "value": "+19999999999"
+    },
+    {
+      "key": "ownerForwardNumber",
+      "value": ""
+    },
+    {
+      "key": "customerPhone",
+      "value": ""
+    },
+    {
+      "key": "customerName",
+      "value": "Postman Booking User"
+    },
+    {
+      "key": "customerEmail",
+      "value": "booking-test@example.invalid"
+    },
+    {
+      "key": "seedCustomerName",
+      "value": "Postman Seed User"
+    },
+    {
+      "key": "seedCustomerPhone",
+      "value": ""
+    },
+    {
+      "key": "seedCustomerEmail",
+      "value": "seed-test@example.invalid"
+    },
+    {
+      "key": "appointmentId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "0 - Backend Auth Smoke",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-automation-key",
+            "value": "{{automationKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"workflowKey\": \"postman-inbound-smoke\",\n  \"executionId\": \"{{runId}}\",\n  \"status\": \"running\",\n  \"startedAt\": \"{{nowIso}}\",\n  \"metadata\": {\n    \"source\": \"postman\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{backendBaseUrl}}/api/automation/workflow-executions",
+          "host": [
+            "{{backendBaseUrl}}"
+          ],
+          "path": [
+            "api",
+            "automation",
+            "workflow-executions"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test('success true', function () { pm.expect(body.success).to.eql(true); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "1 - Inbound Booking (Happy Path)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-automation-key",
+            "value": "{{automationKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"callId\": \"{{callId}}\",\n  \"tenantEmail\": \"{{tenantEmail}}\",\n  \"dialedNumber\": \"{{tenantInboundNumber}}\",\n  \"callerNumber\": \"{{customerPhone}}\",\n  \"intent\": \"booking\",\n  \"idempotencyKey\": \"booking_{{runId}}\",\n  \"service\": \"Consultation\",\n  \"requestedSlot\": {\n    \"date\": \"{{bookingDate}}\",\n    \"time\": \"10:00\"\n  },\n  \"customer\": {\n    \"name\": \"{{customerName}}\",\n    \"email\": \"{{customerEmail}}\",\n    \"phone\": \"{{customerPhone}}\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{n8nBaseUrl}}/webhook/qc-v2-inbound-call",
+          "host": [
+            "{{n8nBaseUrl}}"
+          ],
+          "path": [
+            "webhook",
+            "qc-v2-inbound-call"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test('booking success route', function () { pm.expect(body.success).to.eql(true); pm.expect(body.route).to.eql('appointment_booked'); });",
+              "if (body.booking && body.booking.id) { pm.collectionVariables.set('appointmentId', String(body.booking.id)); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "2 - Seed Appointment For Reschedule/Cancel",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-automation-key",
+            "value": "{{automationKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"tenantEmail\": \"{{tenantEmail}}\",\n  \"dialedNumber\": \"{{tenantInboundNumber}}\",\n  \"customer\": {\n    \"name\": \"{{seedCustomerName}}\",\n    \"phone\": \"{{seedCustomerPhone}}\",\n    \"email\": \"{{seedCustomerEmail}}\"\n  },\n  \"requestedSlot\": {\n    \"date\": \"{{seedDate}}\",\n    \"time\": \"11:00\"\n  },\n  \"service\": \"Consultation\"\n}"
+        },
+        "url": {
+          "raw": "{{backendBaseUrl}}/api/automation/appointments/book",
+          "host": [
+            "{{backendBaseUrl}}"
+          ],
+          "path": [
+            "api",
+            "automation",
+            "appointments",
+            "book"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 201', function () { pm.response.to.have.status(201); });",
+              "const body = pm.response.json();",
+              "pm.test('seed appointment created', function () { pm.expect(body.success).to.eql(true); pm.expect(body.data).to.be.an('object'); });",
+              "if (body.data && body.data.id) { pm.collectionVariables.set('appointmentId', String(body.data.id)); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "3 - Inbound Reschedule",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-automation-key",
+            "value": "{{automationKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"callId\": \"{{callId}}\",\n  \"tenantEmail\": \"{{tenantEmail}}\",\n  \"dialedNumber\": \"{{tenantInboundNumber}}\",\n  \"callerNumber\": \"{{customerPhone}}\",\n  \"intent\": \"reschedule\",\n  \"idempotencyKey\": \"reschedule_{{runId}}\",\n  \"appointmentId\": \"{{appointmentId}}\",\n  \"newSlot\": {\n    \"date\": \"{{rescheduleDate}}\",\n    \"time\": \"14:30\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{n8nBaseUrl}}/webhook/qc-v2-inbound-call",
+          "host": [
+            "{{n8nBaseUrl}}"
+          ],
+          "path": [
+            "webhook",
+            "qc-v2-inbound-call"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test('reschedule success route', function () { pm.expect(body.success).to.eql(true); pm.expect(body.route).to.eql('appointment_rescheduled'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4 - Inbound Cancel",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-automation-key",
+            "value": "{{automationKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"callId\": \"{{callId}}\",\n  \"tenantEmail\": \"{{tenantEmail}}\",\n  \"dialedNumber\": \"{{tenantInboundNumber}}\",\n  \"callerNumber\": \"{{customerPhone}}\",\n  \"intent\": \"cancel\",\n  \"idempotencyKey\": \"cancel_{{runId}}\",\n  \"appointmentId\": \"{{appointmentId}}\"\n}"
+        },
+        "url": {
+          "raw": "{{n8nBaseUrl}}/webhook/qc-v2-inbound-call",
+          "host": [
+            "{{n8nBaseUrl}}"
+          ],
+          "path": [
+            "webhook",
+            "qc-v2-inbound-call"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test('cancel success route', function () { pm.expect(body.success).to.eql(true); pm.expect(body.route).to.eql('appointment_cancelled'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "5 - Inbound General Query",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-automation-key",
+            "value": "{{automationKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"callId\": \"{{callId}}\",\n  \"tenantEmail\": \"{{tenantEmail}}\",\n  \"dialedNumber\": \"{{tenantInboundNumber}}\",\n  \"callerNumber\": \"{{customerPhone}}\",\n  \"intent\": \"query\",\n  \"idempotencyKey\": \"query_{{runId}}\",\n  \"query\": \"What are your hours?\"\n}"
+        },
+        "url": {
+          "raw": "{{n8nBaseUrl}}/webhook/qc-v2-inbound-call",
+          "host": [
+            "{{n8nBaseUrl}}"
+          ],
+          "path": [
+            "webhook",
+            "qc-v2-inbound-call"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test('query success route', function () { pm.expect(body.success).to.eql(true); pm.expect(body.route).to.eql('query_handled'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "6 - Inbound Slot Unavailable",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-automation-key",
+            "value": "{{automationKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"callId\": \"{{callId}}\",\n  \"tenantEmail\": \"{{tenantEmail}}\",\n  \"dialedNumber\": \"{{tenantInboundNumber}}\",\n  \"callerNumber\": \"{{customerPhone}}\",\n  \"intent\": \"booking\",\n  \"idempotencyKey\": \"slot_unavailable_{{runId}}\",\n  \"requestedSlot\": {\n    \"date\": \"{{bookingDate}}\",\n    \"time\": \"99:99\"\n  },\n  \"customer\": {\n    \"name\": \"{{customerName}}\",\n    \"email\": \"{{customerEmail}}\",\n    \"phone\": \"{{customerPhone}}\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{n8nBaseUrl}}/webhook/qc-v2-inbound-call",
+          "host": [
+            "{{n8nBaseUrl}}"
+          ],
+          "path": [
+            "webhook",
+            "qc-v2-inbound-call"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test('slot unavailable route', function () { pm.expect(body.success).to.eql(false); pm.expect(body.route).to.eql('slot_unavailable'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "7 - Tenant B General Query (Isolation)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-automation-key",
+            "value": "{{automationKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"callId\": \"{{callId}}\",\n  \"tenantEmail\": \"{{tenantBEmail}}\",\n  \"dialedNumber\": \"{{tenantBInboundNumber}}\",\n  \"callerNumber\": \"{{customerPhone}}\",\n  \"intent\": \"query\",\n  \"idempotencyKey\": \"tenant_b_query_{{runId}}\",\n  \"query\": \"What are your hours?\"\n}"
+        },
+        "url": {
+          "raw": "{{n8nBaseUrl}}/webhook/qc-v2-inbound-call",
+          "host": [
+            "{{n8nBaseUrl}}"
+          ],
+          "path": [
+            "webhook",
+            "qc-v2-inbound-call"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test('query success route', function () { pm.expect(body.success).to.eql(true); pm.expect(body.route).to.eql('query_handled'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "8 - Inbound Fallback (Unknown Tenant)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-automation-key",
+            "value": "{{automationKey}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"callId\": \"{{callId}}\",\n  \"tenantEmail\": \"{{unknownTenantEmail}}\",\n  \"dialedNumber\": \"{{unknownInboundNumber}}\",\n  \"callerNumber\": \"{{customerPhone}}\",\n  \"intent\": \"query\",\n  \"idempotencyKey\": \"fallback_{{runId}}\",\n  \"ownerForwardNumber\": \"{{ownerForwardNumber}}\"\n}"
+        },
+        "url": {
+          "raw": "{{n8nBaseUrl}}/webhook/qc-v2-inbound-call",
+          "host": [
+            "{{n8nBaseUrl}}"
+          ],
+          "path": [
+            "webhook",
+            "qc-v2-inbound-call"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test('fallback route', function () { pm.expect(body.success).to.eql(false); pm.expect(body.route).to.eql('fallback_owner'); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

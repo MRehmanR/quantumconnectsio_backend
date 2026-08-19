@@ -1,0 +1,1444 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "qc-v2-inbound-call",
+        "responseMode": "responseNode",
+        "options": {},
+        "authentication": "headerAuth"
+      },
+      "id": "d589d86c-8992-4ff2-93ee-b03a891a2e0d",
+      "name": "Webhook Inbound Call",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -2736,
+        272
+      ],
+      "webhookId": "b6b63862-b71d-4b19-95c9-7ef7e94eddf3",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json || {};\nconst body = input.body || input;\nconst call = body.call || body.call_inbound || {};\nconst args = body.args || {};\nconst payload = body.payload || {};\nconst data = { ...body, ...payload, ...args };\nconst requestedSlot = data.requestedSlot || {};\nconst newSlot = data.newSlot || {};\nconst customer = data.customer || {};\nconst transcript = data.transcript || data.transcript_with_tool_calls?.map((m) => m.content).join(' ') || data.messages?.map((m) => m.content).join(' ') || '';\nconst match = (pattern) => transcript.match(pattern)?.[1]?.trim() || '';\nconst normalizeIntent = (value) => {\n  const intent = String(value || '').toLowerCase().trim();\n  if (['book', 'booking'].includes(intent)) return 'booking';\n  if (['reschedule', 'change'].includes(intent)) return 'reschedule';\n  if (['cancel', 'cancellation'].includes(intent)) return 'cancel';\n  return 'query';\n};\nconst eventType = String(data.event_type || data.event || data.eventType || '').toLowerCase();\nconst callId = data.callId || data.call_id || call.call_id || '';\nreturn [{ json: {\n  callId,\n  eventType,\n  dialedNumber: data.dialedNumber || data.to_number || data.to || call.to_number || '',\n  callerNumber: data.callerNumber || data.from_number || data.from || call.from_number || '',\n  intent: normalizeIntent(data.intent || data.action || body.name),\n  transcript,\n  query: data.query || args.query || transcript,\n  customerName: customer.name || data.customerName || match(/my name is ([a-zA-Z ]+)/i) || 'Unknown Caller',\n  customerEmail: customer.email || data.customerEmail || match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-z]{2,})/i),\n  customerPhone: customer.phone || data.customerPhone || data.callerNumber || data.from_number || call.from_number || '',\n  requestedSlot,\n  requestedDate: requestedSlot.date || data.requestedDate || data.date || '',\n  requestedTime: requestedSlot.time || data.requestedTime || data.time || '',\n  newSlot,\n  newDate: newSlot.date || data.newDate || '',\n  newTime: newSlot.time || data.newTime || '',\n  appointmentId: data.appointmentId || data.appointment_id || '',\n  service: data.service || data.service_type || 'Consultation',\n  idempotencyKey: data.idempotencyKey || body.event_id || (callId ? 'call_' + callId + '_' + (eventType || 'request') : 'request_' + Date.now()),\n  tenantEmail: data.tenantEmail || body.tenant?.email || '',\n  tenantId: data.tenantId || body.tenant?.id || '',\n  tenantTimezone: body.tenant?.timezone || 'UTC',\n  ownerForwardNumber: data.ownerForwardNumber || ''\n} }];"
+      },
+      "id": "c55921e5-cbd4-4df4-8526-9fb93cab681b",
+      "name": "Normalize Inbound Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2288,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/call-preflight'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { tenantEmail: $json.tenantEmail, dialedNumber: $json.dialedNumber, callerNumber: $json.callerNumber, idempotencyKey: 'preflight_' + $json.idempotencyKey } }}",
+        "options": {}
+      },
+      "id": "2149dee2-37dd-45a7-bde1-08723857a32c",
+      "name": "Run Call Preflight",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1840,
+        272
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "Usage80",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{$json.usagePercent}}",
+              "rightValue": 70
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6c3f8f3e-ff94-4166-9766-d9baa6819172",
+      "name": "IF Usage >= 70%?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1344,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.N8N_BASE_URL + '/webhook/qc-v2-usage-threshold-alert'}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { jobType: $json.usagePercent >= 100 ? 'usage.threshold.100' : 'usage.threshold.70', jobId: 'usage_' + $json.idempotencyKey, tenant: { id: String($json.tenantId || $json.tenantEmail), email: $json.tenantEmail, inboundNumber: $json.dialedNumber, timezone: $json.tenantTimezone || 'UTC' }, occurredAt: new Date().toISOString(), payload: { callId: $json.callId, usagePercent: $json.usagePercent, remainingPercent: $json.remainingPercent, usage: $json.usage, threshold: $json.usagePercent >= 100 ? 100 : 70 } } }}",
+        "options": {}
+      },
+      "id": "b171ea27-12fb-4c9c-9d66-7539c0aa025c",
+      "name": "Trigger Usage Alert Workflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1088,
+        112
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "Accepted",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.accepted === true || $json.accepted === 'true' }}",
+              "rightValue": "true"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7e2f1688-0db6-47a3-92db-f155c5695906",
+      "name": "IF Call Accepted?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -848,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{($vars.RETELL_API_BASE_URL || 'https://api.retellai.com/v2') + '/calls/' + ($json.callId || '') + '/transfer'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "={{'fallback_' + $json.idempotencyKey}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { to_number: $json.ownerPhone || '', reason: $json.preflightReason || 'usage_or_inactive_fallback' } }}",
+        "options": {}
+      },
+      "id": "ca46909c-e1e9-4f4a-ac8b-379bfc14dc1c",
+      "name": "Route To Owner/Fallback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -624,
+        464
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "fyZ2z9FLnbYftPSm",
+          "name": "ServiceM8"
+        },
+        "httpHeaderAuth": {
+          "id": "3h3ca6PEqH8yPPq3",
+          "name": "RetellAI"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    ...$json,\n    route: 'fallback_owner',\n    success: false,\n    message: 'Call routed to owner fallback.'\n  }\n}]"
+      },
+      "id": "20132035-7c1a-4aa4-8523-aa9bad8bfdbb",
+      "name": "Build Fallback Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -384,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/call-finalize'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { tenantEmail: $json.tenantEmail, dialedNumber: $json.dialedNumber, wasConnected: false } }}",
+        "options": {}
+      },
+      "id": "e51284bc-0905-4e40-baa8-9db9a2d0075e",
+      "name": "Finalize Fallback Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -144,
+        624
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, route: $('Build Fallback Payload').first().json.route, reason: $('Build Fallback Payload').first().json.preflightReason, callId: $('Build Fallback Payload').first().json.callId, executionId: $execution.id } }}",
+        "options": {}
+      },
+      "id": "1a1fce4f-7905-48ae-bb47-64f5fccb1bfd",
+      "name": "Respond Fallback",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        96,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "IntentBooking",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{$json.intent}}",
+              "rightValue": "booking"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "dce76250-31b0-489d-9246-ef72d62c944d",
+      "name": "IF Intent Booking?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -624,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/appointments/check-availability'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {},
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { tenantEmail: $json.tenantEmail, dialedNumber: $json.dialedNumber, requestedSlot: { date: $json.requestedDate, time: $json.requestedTime } } }}"
+      },
+      "id": "2ec83824-fd0a-406b-a536-ccb37a80fff2",
+      "name": "Get Appointment Availability",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -384,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const base = $('Evaluate Preflight Result').first().json || {};\nconst response = $input.first()?.json || {};\nconst availability = response.data || {};\nreturn [{ json: { ...base, availableSlots: availability.alternativeSlots || [], slotAvailable: Boolean(availability.available) } }];"
+      },
+      "id": "5c46e2f5-dbeb-4224-b80e-f0917a3a948a",
+      "name": "Evaluate Requested Slot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -144,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "SlotAvailable",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{$json.slotAvailable}}",
+              "rightValue": ""
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "4a6977ab-4db4-4c85-86fe-c0a6921d158c",
+      "name": "IF Slot Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        96,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/appointments/book'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { tenantEmail: $json.tenantEmail, dialedNumber: $json.dialedNumber, customer: { name: $json.customerName, phone: $json.customerPhone, email: $json.customerEmail }, requestedSlot: { date: $json.requestedDate, time: $json.requestedTime }, service: $json.service } }}",
+        "options": {}
+      },
+      "id": "f4f2d4ee-caea-4272-b236-7a49d34fe513",
+      "name": "Create Appointment (Website Table)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        336,
+        -80
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const base = $('Evaluate Preflight Result').first().json || {};\nconst result = $input.first()?.json || {};\nreturn [{ json: { ...base, success: true, route: 'appointment_booked', booking: result.data || null, message: 'Appointment booked and saved in the dashboard.' } }];"
+      },
+      "id": "8eb63924-9daa-41b9-b0d7-c737c7f35487",
+      "name": "Build Booking Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        576,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const base = $('Evaluate Requested Slot').first().json || {};\nreturn [{ json: { ...base, success: false, route: 'slot_unavailable', message: 'Requested slot is unavailable.' } }];"
+      },
+      "id": "7842b457-fd78-4ae8-bb5a-2905e1ef697c",
+      "name": "Build Slot Unavailable",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        336,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/call-finalize'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { tenantEmail: $json.tenantEmail, dialedNumber: $json.dialedNumber, wasConnected: true } }}",
+        "options": {}
+      },
+      "id": "16654e43-9811-4952-9378-f4cdba2d2445",
+      "name": "Finalize Slot Unavailable Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        576,
+        144
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: false, route: $('Build Slot Unavailable').first().json.route, alternatives: $('Build Slot Unavailable').first().json.availableSlots || [], callId: $('Build Slot Unavailable').first().json.callId, executionId: $execution.id } }}",
+        "options": {}
+      },
+      "id": "7fc6eaa9-9148-4906-ab31-27209f0de333",
+      "name": "Respond Slot Unavailable",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        816,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": false,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "IntentReschedule",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{$json.intent}}",
+              "rightValue": "reschedule"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "004f6963-f417-4463-955b-d10130a1ba44",
+      "name": "IF Intent Reschedule?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -384,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/appointments/reschedule'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { tenantEmail: $json.tenantEmail, dialedNumber: $json.dialedNumber, appointmentId: $json.appointmentId, newSlot: { date: $json.newDate, time: $json.newTime } } }}",
+        "options": {}
+      },
+      "id": "79be1721-899b-4aca-8565-854593e02bd6",
+      "name": "Reschedule Appointment (Website Table)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -144,
+        208
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const base = $('Evaluate Preflight Result').first().json || {};\nconst result = $input.first()?.json || {};\nreturn [{ json: { ...base, success: true, route: 'appointment_rescheduled', booking: result.data || null, message: 'Appointment rescheduled in the dashboard.' } }];"
+      },
+      "id": "c5433856-6e36-44d3-a2cf-46f5b96dc326",
+      "name": "Build Reschedule Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        96,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": false,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "IntentCancel",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{$json.intent}}",
+              "rightValue": "cancel"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6394fb80-430c-4e8b-96eb-6b295596359c",
+      "name": "IF Intent Cancel?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -144,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/appointments/cancel'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { tenantEmail: $json.tenantEmail, dialedNumber: $json.dialedNumber, appointmentId: $json.appointmentId, reason: 'caller_requested' } }}",
+        "options": {}
+      },
+      "id": "d12da86e-4c9f-44eb-8716-3ba4c6e3b932",
+      "name": "Cancel Appointment (Website Table)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        112,
+        416
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/waitlist/trigger-batch'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { tenantEmail: $json.tenantEmail, batchSize: Number($vars.QC_WAITLIST_BATCH_SIZE || 3) } }}",
+        "options": {}
+      },
+      "id": "12c46c29-1ce3-4fa4-a15f-de4d2bccd571",
+      "name": "Trigger Waitlist Batch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        336,
+        416
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const base = $('Evaluate Preflight Result').first().json || {};\nconst result = $('Cancel Appointment (Website Table)').first().json || {};\nreturn [{ json: { ...base, success: true, route: 'appointment_cancelled', booking: result.data || null, message: 'Appointment cancelled and waitlist processing triggered.' } }];"
+      },
+      "id": "57b1d5db-c780-413f-a197-ba1a84539119",
+      "name": "Build Cancel Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        592,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/kb/query'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { tenantEmail: $json.tenantEmail, dialedNumber: $json.dialedNumber, query: $json.query, idempotencyKey: 'query_' + $json.idempotencyKey } }}",
+        "options": {}
+      },
+      "id": "f116b52f-6096-4f64-98a4-b93efdec397f",
+      "name": "Query Tenant Knowledge Base",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        128,
+        624
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const base = $('Evaluate Preflight Result').first().json || {};\nconst response = $input.first()?.json || {};\nconst answer = response.data?.answer || 'No knowledge base answer found.';\nreturn [{ json: { ...base, success: true, route: 'query_handled', booking: null, answer, message: answer } }];"
+      },
+      "id": "6ff063ca-64d2-41b1-af60-cb670f0e8a5d",
+      "name": "Build Query Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        368,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/call-finalize'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { tenantEmail: $json.tenantEmail, dialedNumber: $json.dialedNumber, wasConnected: true } }}",
+        "options": {}
+      },
+      "id": "d1fe49e3-6603-4489-b3c3-804ca7d80d76",
+      "name": "Finalize Successful Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1600,
+        160
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, route: $json.route || 'continue_ai', intent: $json.intent, callId: $json.callId, usagePercent: $json.usagePercent, booking: $json.booking || null, executionId: $execution.id } }}",
+        "options": {}
+      },
+      "id": "9cfc09d9-ae9f-4391-bd6d-27f41e027bae",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1792,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const base = $('Normalize Inbound Request').first().json || {};\nconst preflightRaw = $input.first()?.json || {};\nconst preflight = preflightRaw.data || {};\nconst usage = preflight.usage || {};\nconst includedLimit = Number(usage.includedLimit || 0);\nconst used = Number(usage.used || 0);\nconst usagePercent = Number(usage.usagePercent ?? (includedLimit > 0 ? Math.round((used / includedLimit) * 100) : 0));\nreturn [{ json: {\n  ...base,\n  tenantId: String(preflight.userId || base.tenantId || ''),\n  preflightSuccess: Boolean(preflightRaw.success),\n  accepted: Boolean(preflight.accepted),\n  preflightAction: preflight.action || '',\n  preflightReason: preflight.reason || 'unknown',\n  ownerPhone: preflight.ownerPhone || base.ownerForwardNumber || '',\n  usage,\n  usagePercent,\n  remainingPercent: Math.max(100 - usagePercent, 0),\n  shouldAlert70: usagePercent >= 70\n} }];"
+      },
+      "id": "6b26775a-2a93-4dd6-baf0-3cd3854c3fb2",
+      "name": "Evaluate Preflight Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1584,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "from": "={{ $json.dialedNumber }}",
+        "to": "={{ $json.callerNumber }}",
+        "message": "=Dear  {{ $json.booking.customerName }} Your Boking Is Confirmed for{{ $json.booking.type }} . Date and time is {{ $json.booking.date }}, {{ $json.booking.time }}",
+        "options": {}
+      },
+      "id": "ad3f0ad8-20bc-4d46-9b7c-67e79eee3630",
+      "name": "Send Booking Confirmation SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        928,
+        -112
+      ],
+      "credentials": {
+        "twilioApi": {
+          "id": "ey7uQPmJvBnpf2VP",
+          "name": "Quantum Twilio"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$vars.QC_NOTIFICATION_FROM_EMAIL || 'no-reply@quantumconnects.local'}}",
+        "toEmail": "={{ $('Build Booking Success').item.json.customerEmail }}",
+        "subject": "Appointment Booking Confirmed",
+        "html": "=<div style=\"background:#f4f6f8; padding:20px; font-family:Arial, sans-serif;\">\n  \n  <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:600px; margin:auto; background:#ffffff; border-radius:8px; padding:20px;\">\n    \n    <tr>\n      <td style=\"text-align:center; padding-bottom:20px;\">\n        <h2 style=\"margin:0; color:#2c3e50;\">Booking Confirmed ✅</h2>\n      </td>\n    </tr>\n\n    <tr>\n      <td style=\"padding-bottom:10px; color:#333;\">\n        Dear <strong>{{ $('Build Booking Success').item.json.customerName }}</strong>,\n      </td>\n    </tr>\n\n    <tr>\n      <td style=\"padding-bottom:20px; color:#555;\">\n        Your booking has been successfully confirmed. Here are your appointment details:\n      </td>\n    </tr>\n\n    <tr>\n      <td>\n        <table width=\"100%\" cellpadding=\"8\" cellspacing=\"0\" style=\"border:1px solid #e0e0e0; border-radius:6px;\">\n          \n          <tr>\n            <td style=\"background:#f9fafb;\"><strong>Service</strong></td>\n            <td>{{ $('Build Booking Success').item.json.service }}</td>\n          </tr>\n          \n          <tr>\n            <td style=\"background:#f9fafb;\"><strong>Date</strong></td>\n            <td>{{ $('Build Booking Success').item.json.requestedDate }}</td>\n          </tr>\n          \n          <tr>\n            <td style=\"background:#f9fafb;\"><strong>Time</strong></td>\n            <td>{{ $('Build Booking Success').item.json.requestedTime }}</td>\n          </tr>\n\n        </table>\n      </td>\n    </tr>\n\n    <tr>\n      <td style=\"padding-top:20px; color:#666;\">\n        If you need to reschedule or cancel your appointment, please contact us.\n      </td>\n    </tr>\n\n  </table>\n\n</div>",
+        "options": {}
+      },
+      "id": "7da585e0-66a3-47f5-b86b-5b55c9a903e1",
+      "name": "Send Booking Confirmation Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1168,
+        -112
+      ],
+      "webhookId": "4a0e84bc-b6d0-47d3-b636-d69defdd7ec6",
+      "credentials": {
+        "smtp": {
+          "id": "OAJiqdPNORIduM3f",
+          "name": "SMTP account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "from": "={{ $json.dialedNumber }}",
+        "to": "={{ $json.callerNumber }}",
+        "message": "=Dear {{ $json.customerName }}, \nYour booking for {{ $json.service }} scheduled on {{ $json.requestedDate }} at {{ $json.requestedTime }} has been cancelled. \nIf you would like to reschedule, please feel free to contact us.",
+        "options": {}
+      },
+      "id": "37f94612-e96a-4de5-89f8-22fc3d1c6155",
+      "name": "Send Booking Confirmation SMS1",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        1072,
+        592
+      ],
+      "credentials": {
+        "twilioApi": {
+          "id": "ey7uQPmJvBnpf2VP",
+          "name": "Quantum Twilio"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$vars.QC_NOTIFICATION_FROM_EMAIL || 'no-reply@quantumconnects.local'}}",
+        "toEmail": "={{ $('Build Booking Success').item.json.customerEmail }}",
+        "subject": "Appointment Booking Confirmed",
+        "html": "=<div style=\"background:#f4f6f8; padding:20px; font-family:Arial, sans-serif;\">\n  \n  <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:600px; margin:auto; background:#ffffff; border-radius:8px; padding:20px;\">\n    \n    <tr>\n      <td style=\"text-align:center; padding-bottom:20px;\">\n        <h2 style=\"margin:0; color:#2c3e50;\">Booking Confirmed ✅</h2>\n      </td>\n    </tr>\n\n    <tr>\n      <td style=\"padding-bottom:10px; color:#333;\">\n        Dear <strong>{{ $('Build Booking Success').item.json.customerName }}</strong>,\n      </td>\n    </tr>\n\n    <tr>\n      <td style=\"padding-bottom:20px; color:#555;\">\n        Your booking has been successfully confirmed. Here are your appointment details:\n      </td>\n    </tr>\n\n    <tr>\n      <td>\n        <table width=\"100%\" cellpadding=\"8\" cellspacing=\"0\" style=\"border:1px solid #e0e0e0; border-radius:6px;\">\n          \n          <tr>\n            <td style=\"background:#f9fafb;\"><strong>Service</strong></td>\n            <td>{{ $('Build Booking Success').item.json.service }}</td>\n          </tr>\n          \n          <tr>\n            <td style=\"background:#f9fafb;\"><strong>Date</strong></td>\n            <td>{{ $('Build Booking Success').item.json.requestedDate }}</td>\n          </tr>\n          \n          <tr>\n            <td style=\"background:#f9fafb;\"><strong>Time</strong></td>\n            <td>{{ $('Build Booking Success').item.json.requestedTime }}</td>\n          </tr>\n\n        </table>\n      </td>\n    </tr>\n\n    <tr>\n      <td style=\"padding-top:20px; color:#666;\">\n        If you need to reschedule or cancel your appointment, please contact us.\n      </td>\n    </tr>\n\n  </table>\n\n</div>",
+        "options": {}
+      },
+      "id": "8674d790-d335-406d-9076-e4dbcb5afed7",
+      "name": "Send Booking Confirmation Email1",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1328,
+        592
+      ],
+      "webhookId": "4a0e84bc-b6d0-47d3-b636-d69defdd7ec6",
+      "credentials": {
+        "smtp": {
+          "id": "OAJiqdPNORIduM3f",
+          "name": "SMTP account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = getWorkflowStaticData('global');\nconst key = String($json.idempotencyKey || '').trim();\nstaticData.processedKeys = staticData.processedKeys || {};\nconst now = Date.now();\nconst ttlMs = 10 * 60 * 1000;\nfor (const [storedKey, timestamp] of Object.entries(staticData.processedKeys)) {\n  if (now - Number(timestamp || 0) > ttlMs) delete staticData.processedKeys[storedKey];\n}\nconst isDuplicate = Boolean(key && staticData.processedKeys[key]);\nif (!isDuplicate && key) staticData.processedKeys[key] = now;\nreturn [{ json: { ...$json, isDuplicate, route: isDuplicate ? 'duplicate_ignored' : ($json.route || 'continue_ai'), success: true, message: isDuplicate ? 'Duplicate webhook ignored.' : ($json.message || 'Continue processing') } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2080,
+        272
+      ],
+      "id": "07f902f8-9634-4b72-8925-2110380eac8d",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "49c1f9fa-463a-4335-8f32-3a545ff5c97c",
+              "leftValue": "={{ (() => { const body = $json.body || $json; const ev = String(body.event_type || body.event || body.eventType || $json.event_type || $json.event || $json.eventType || '').toLowerCase(); return ['call_ended','call_analyzed','call_analysis_ready','conversation_ended'].includes(ev); })() }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -2528,
+        272
+      ],
+      "id": "49e11a93-731d-4f84-a424-f78857f5edcb",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json || {};\nconst body = input.body || input;\nconst call = body.call || {};\nconst eventType = String(body.event_type || body.event || body.eventType || 'unknown');\nreturn [{ json: { success: true, route: 'ignored_non_terminal_event', eventType, callId: body.callId || body.call_id || call.call_id || '', message: 'Ignored non-terminal Retell webhook event.' } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2288,
+        432
+      ],
+      "id": "72e8a9ef-44f6-4518-a528-d77f2fe6f588",
+      "name": "Build Ignored Event Response"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5d1fa9dd-d27d-49ef-a0fb-a2050d12cfe9",
+              "leftValue": "={{$json.isDuplicate}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1840,
+        272
+      ],
+      "id": "12f5944d-f3a0-489e-a7f7-d3cb9267e74d",
+      "name": "IF Duplicate Execution?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/events'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { source: 'n8n', eventType: 'call.completed', idempotencyKey: 'call_completed_' + $json.idempotencyKey, tenantEmail: $json.tenantEmail, occurredAt: new Date().toISOString(), payload: { callId: $json.callId, dialedNumber: $json.dialedNumber, callerPhone: $json.callerNumber, callerName: $json.customerName, callerEmail: $json.customerEmail, status: 'Completed', transcript: $json.transcript || '' } } }}",
+        "options": {}
+      },
+      "id": "4b91f745-8f57-4ca4-a6a1-d0b2f4047f39",
+      "name": "Log Call Transcript Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1616,
+        336
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1200,
+      "continueOnFail": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Inbound Call": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Inbound Request": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Call Preflight": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Preflight Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Call Accepted?": {
+      "main": [
+        [
+          {
+            "node": "IF Intent Booking?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Route To Owner/Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route To Owner/Fallback": {
+      "main": [
+        [
+          {
+            "node": "Build Fallback Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Fallback Payload": {
+      "main": [
+        [
+          {
+            "node": "Finalize Fallback Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Fallback Call": {
+      "main": [
+        [
+          {
+            "node": "Respond Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Intent Booking?": {
+      "main": [
+        [
+          {
+            "node": "Get Appointment Availability",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF Intent Reschedule?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Appointment Availability": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Requested Slot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Requested Slot": {
+      "main": [
+        [
+          {
+            "node": "IF Slot Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Slot Available?": {
+      "main": [
+        [
+          {
+            "node": "Create Appointment (Website Table)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Slot Unavailable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Appointment (Website Table)": {
+      "main": [
+        [
+          {
+            "node": "Build Booking Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Booking Success": {
+      "main": [
+        [
+          {
+            "node": "Send Booking Confirmation SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Slot Unavailable": {
+      "main": [
+        [
+          {
+            "node": "Finalize Slot Unavailable Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Slot Unavailable Call": {
+      "main": [
+        [
+          {
+            "node": "Respond Slot Unavailable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Intent Reschedule?": {
+      "main": [
+        [
+          {
+            "node": "Reschedule Appointment (Website Table)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF Intent Cancel?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reschedule Appointment (Website Table)": {
+      "main": [
+        [
+          {
+            "node": "Build Reschedule Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Reschedule Success": {
+      "main": [
+        [
+          {
+            "node": "Finalize Successful Call",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Intent Cancel?": {
+      "main": [
+        [
+          {
+            "node": "Cancel Appointment (Website Table)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Query Tenant Knowledge Base",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancel Appointment (Website Table)": {
+      "main": [
+        [
+          {
+            "node": "Trigger Waitlist Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Waitlist Batch": {
+      "main": [
+        [
+          {
+            "node": "Build Cancel Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Cancel Success": {
+      "main": [
+        [
+          {
+            "node": "Finalize Successful Call",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Booking Confirmation SMS1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Query Success": {
+      "main": [
+        [
+          {
+            "node": "Finalize Successful Call",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Preflight Result": {
+      "main": [
+        [
+          {
+            "node": "IF Usage >= 70%?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Booking Confirmation SMS": {
+      "main": [
+        [
+          {
+            "node": "Send Booking Confirmation Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Booking Confirmation Email": {
+      "main": [
+        [
+          {
+            "node": "Finalize Successful Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Booking Confirmation SMS1": {
+      "main": [
+        [
+          {
+            "node": "Send Booking Confirmation Email1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Booking Confirmation Email1": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "IF Duplicate Execution?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Normalize Inbound Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Ignored Event Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Ignored Event Response": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Duplicate Execution?": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Call Transcript Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Call Transcript Event": {
+      "main": [
+        [
+          {
+            "node": "Run Call Preflight",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Usage >= 70%?": {
+      "main": [
+        [
+          {
+            "node": "Trigger Usage Alert Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF Call Accepted?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Tenant Knowledge Base": {
+      "main": [
+        [
+          {
+            "node": "Build Query Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "name": "QC - Inbound Call Regression Orchestrator",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

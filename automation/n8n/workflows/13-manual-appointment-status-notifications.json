@@ -1,0 +1,352 @@
+{
+  "name": "QC - Manual Appointment Status Notifications",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "qc-v2-manual-appointment-status-notify",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {},
+        "authentication": "headerAuth"
+      },
+      "id": "Webhook_ManualAppointmentNotification",
+      "name": "Webhook Manual Appointment Notification",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const first = $input.first()?.json || {};\nconst job = first.body || first;\nconst tenant = job.tenant || {};\nconst payload = job.payload || job;\nconst normalize = (value) => String(value || '').trim();\nconst defaultCountryCode = normalize($vars.QC_DEFAULT_PHONE_COUNTRY_CODE || '+1');\nconst toE164 = (value) => {\n  const raw = normalize(value);\n  if (!raw) return '';\n  if (raw.startsWith('+')) return '+' + raw.slice(1).replace(/\\D/g, '');\n  if (raw.startsWith('00')) return '+' + raw.slice(2).replace(/\\D/g, '');\n  const digits = raw.replace(/\\D/g, '');\n  if (!digits) return '';\n  const code = defaultCountryCode.startsWith('+') ? defaultCountryCode : '+' + defaultCountryCode;\n  return digits.startsWith('0') ? code + digits.slice(1) : '+' + digits;\n};\nconst customerPhone = normalize(payload.customerPhone);\nconst ownerPhone = normalize(payload.ownerPhone);\nreturn [{ json: {\n  jobType: job.jobType || 'appointment.status_updated',\n  jobId: job.jobId || payload.idempotencyKey || 'appointment_' + Date.now(),\n  action: normalize(payload.action || 'status_updated'),\n  status: normalize(payload.status || 'Pending'),\n  previousStatus: normalize(payload.previousStatus),\n  tenantId: String(tenant.id || ''),\n  tenantEmail: normalize(tenant.email || job.tenantEmail),\n  ownerPhone,\n  ownerPhoneE164: toE164(ownerPhone),\n  customerName: normalize(payload.customerName || 'Customer'),\n  customerPhone,\n  customerPhoneE164: toE164(customerPhone),\n  customerEmail: normalize(payload.customerEmail),\n  appointmentDate: normalize(payload.appointmentDate),\n  appointmentTime: normalize(payload.appointmentTime),\n  appointmentType: normalize(payload.appointmentType || 'Consultation'),\n  appointmentId: normalize(payload.appointmentId),\n  occurredAt: normalize(job.occurredAt || new Date().toISOString())\n} }];"
+      },
+      "id": "Code_NormalizeInput",
+      "name": "Normalize Manual Appointment Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "IsCancelled",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{$json.status}}",
+              "rightValue": "Cancelled"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "IF_IsCancelled",
+      "name": "IF Status Is Cancelled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        940,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "from": "={{$vars.QC_TWILIO_FROM_NUMBER || ''}}",
+        "to": "={{$json.customerPhoneE164 || $json.customerPhone || ''}}",
+        "message": "={{'Hello ' + ($json.customerName || 'Customer') + ', your appointment on ' + ($json.appointmentDate || 'scheduled date') + ' at ' + ($json.appointmentTime || 'scheduled time') + ' has been cancelled.'}}"
+      },
+      "id": "Twilio_CancelCustomer",
+      "name": "Send Customer Cancel SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        1180,
+        180
+      ],
+      "continueOnFail": true,
+      "credentials": {
+        "twilioApi": {
+          "id": "QC_TWILIO_API_CRED",
+          "name": "Quantum Twilio"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$vars.QC_NOTIFICATION_FROM_EMAIL || 'no-reply@quantumconnects.local'}}",
+        "toEmail": "={{$json.customerEmail || ''}}",
+        "subject": "Appointment Cancelled",
+        "message": "={{'Hello ' + ($json.customerName || 'Customer') + ',\\n\\nYour appointment (' + ($json.appointmentType || 'Consultation') + ') on ' + ($json.appointmentDate || 'scheduled date') + ' at ' + ($json.appointmentTime || 'scheduled time') + ' has been cancelled.\\n\\nThank you,\\nQuantum Connects'}}",
+        "options": {}
+      },
+      "id": "Email_CancelCustomer",
+      "name": "Send Customer Cancel Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1420,
+        180
+      ],
+      "continueOnFail": true,
+      "credentials": {
+        "smtp": {
+          "id": "QC_SMTP_ACCOUNT_CRED",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "from": "={{$vars.QC_TWILIO_FROM_NUMBER || ''}}",
+        "to": "={{$json.customerPhoneE164 || $json.customerPhone || ''}}",
+        "message": "={{$json.action === 'booked' ? ('Hello ' + ($json.customerName || 'Customer') + ', your appointment is confirmed for ' + ($json.appointmentDate || 'scheduled date') + ' at ' + ($json.appointmentTime || 'scheduled time') + '. We look forward to seeing you.') : ('Hello ' + ($json.customerName || 'Customer') + ', your appointment status is now ' + ($json.status || 'updated') + ' for ' + ($json.appointmentDate || 'scheduled date') + ' at ' + ($json.appointmentTime || 'scheduled time') + '.')}}"
+      },
+      "id": "Twilio_StatusCustomer",
+      "name": "Send Customer Status SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        1180,
+        420
+      ],
+      "continueOnFail": true,
+      "credentials": {
+        "twilioApi": {
+          "id": "QC_TWILIO_API_CRED",
+          "name": "Quantum Twilio"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$vars.QC_NOTIFICATION_FROM_EMAIL || 'no-reply@quantumconnects.local'}}",
+        "subject": "={{$json.action === 'booked' ? 'Appointment Confirmed' : 'Appointment Status Updated'}}",
+        "message": "={{$json.action === 'booked' ? ('Hello ' + ($json.customerName || 'Customer') + ',\\n\\nYour appointment has been confirmed.\\nDate: ' + ($json.appointmentDate || 'N/A') + '\\nTime: ' + ($json.appointmentTime || 'N/A') + '\\nService: ' + ($json.appointmentType || 'Consultation') + '\\n\\nThank you,\\nQuantum Connects') : ('Hello ' + ($json.customerName || 'Customer') + ',\\n\\nYour appointment status has been updated to ' + ($json.status || 'updated') + '.\\nDate: ' + ($json.appointmentDate || 'N/A') + '\\nTime: ' + ($json.appointmentTime || 'N/A') + '\\nService: ' + ($json.appointmentType || 'Consultation') + '\\n\\nThank you,\\nQuantum Connects')}}",
+        "options": {}
+      },
+      "id": "Email_StatusCustomer",
+      "name": "Send Customer Status Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1420,
+        420
+      ],
+      "continueOnFail": true,
+      "credentials": {
+        "smtp": {
+          "id": "QC_SMTP_ACCOUNT_CRED",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "from": "={{$vars.QC_TWILIO_FROM_NUMBER || ''}}",
+        "to": "={{$json.ownerPhoneE164 || $json.ownerPhone || ''}}",
+        "message": "={{$json.action === 'booked' ? ('Dashboard update: new appointment ' + ($json.appointmentId || '') + ' booked for ' + ($json.customerName || 'Customer') + ' on ' + ($json.appointmentDate || 'scheduled date') + ' at ' + ($json.appointmentTime || 'scheduled time') + '.') : ('Dashboard update: appointment ' + ($json.appointmentId || '') + ' for ' + ($json.customerName || 'Customer') + ' is now ' + ($json.status || 'updated') + '.')}}"
+      },
+      "id": "Twilio_OwnerAlert",
+      "name": "Send Owner Alert SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        1660,
+        300
+      ],
+      "continueOnFail": true,
+      "credentials": {
+        "twilioApi": {
+          "id": "QC_TWILIO_API_CRED",
+          "name": "Quantum Twilio"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/events'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { source: 'n8n', eventType: $json.action === 'booked' ? 'appointment.notification.booked_sent' : 'appointment.notification.manual_status_sent', idempotencyKey: 'manual_status_notify_' + $json.idempotencyKey, tenantEmail: $json.tenantEmail, occurredAt: $json.occurredAt, payload: { appointmentId: $json.appointmentId, status: $json.status, previousStatus: $json.previousStatus, customerPhone: $json.customerPhone, customerEmail: $json.customerEmail, action: $json.action } } }}",
+        "options": {}
+      },
+      "id": "HTTP_LogNotificationEvent",
+      "name": "Log Manual Notification Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1900,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "continueOnFail": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, route: 'manual_appointment_notification_processed', appointmentId: $json.appointmentId, status: $json.status, executionId: $execution.id } }}",
+        "options": {}
+      },
+      "id": "Respond_Done",
+      "name": "Respond Manual Notification Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2140,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Manual Appointment Notification": {
+      "main": [
+        [
+          {
+            "node": "Normalize Manual Appointment Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Manual Appointment Input": {
+      "main": [
+        [
+          {
+            "node": "IF Status Is Cancelled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Status Is Cancelled?": {
+      "main": [
+        [
+          {
+            "node": "Send Customer Cancel SMS",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Customer Status SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Customer Cancel SMS": {
+      "main": [
+        [
+          {
+            "node": "Send Customer Cancel Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Customer Cancel Email": {
+      "main": [
+        [
+          {
+            "node": "Send Owner Alert SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Customer Status SMS": {
+      "main": [
+        [
+          {
+            "node": "Send Customer Status Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Customer Status Email": {
+      "main": [
+        [
+          {
+            "node": "Send Owner Alert SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Owner Alert SMS": {
+      "main": [
+        [
+          {
+            "node": "Log Manual Notification Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Manual Notification Event": {
+      "main": [
+        [
+          {
+            "node": "Respond Manual Notification Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "1"
+}

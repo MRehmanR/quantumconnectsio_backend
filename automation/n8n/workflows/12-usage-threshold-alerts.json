@@ -1,0 +1,270 @@
+{
+  "name": "QC - Usage Threshold Alerts",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "qc-v2-usage-threshold-alert",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {},
+        "authentication": "headerAuth"
+      },
+      "id": "Webhook_UsageAlert",
+      "name": "Webhook Usage Threshold Alert",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        260
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const first = $input.first()?.json || {};\nconst job = first.body || first;\nconst tenant = job.tenant || {};\nconst payload = job.payload || job;\nconst usage = payload.usage || {};\nconst usagePercent = Number(payload.usagePercent ?? usage.usagePercent ?? 0);\nreturn [{ json: {\n  jobType: job.jobType || (usagePercent >= 100 ? 'usage.threshold.100' : 'usage.threshold.70'),\n  jobId: job.jobId || job.idempotencyKey || 'usage_alert_' + Date.now(),\n  tenantId: String(tenant.id || ''),\n  tenantEmail: tenant.email || job.tenantEmail || '',\n  inboundNumber: tenant.inboundNumber || '',\n  usagePercent,\n  remainingPercent: Number(payload.remainingPercent ?? Math.max(100 - usagePercent, 0)),\n  usage,\n  callId: payload.callId || '',\n  occurredAt: job.occurredAt || new Date().toISOString()\n} }];"
+      },
+      "id": "Code_Normalize",
+      "name": "Normalize Usage Alert Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "Over100",
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              },
+              "leftValue": "={{$json.usagePercent}}",
+              "rightValue": 100
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "IF_Usage100",
+      "name": "IF Usage >= 100%?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        700,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/events'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { source: 'n8n', eventType: 'usage.threshold.100.notified', idempotencyKey: 'usage100_notified_' + $json.jobId, tenantEmail: $json.tenantEmail, occurredAt: $json.occurredAt, payload: { tenantId: $json.tenantId, usagePercent: $json.usagePercent, remainingPercent: $json.remainingPercent, usage: $json.usage, callId: $json.callId } } }}",
+        "options": {}
+      },
+      "id": "HTTP_Log100",
+      "name": "Log Usage 100 Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        940,
+        180
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "continueOnFail": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "Over80",
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              },
+              "leftValue": "={{$json.usagePercent}}",
+              "rightValue": 70
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "IF_Usage80",
+      "name": "IF Usage >= 70%?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        940,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/events'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { source: 'n8n', eventType: 'usage.threshold.70.notified', idempotencyKey: 'usage70_notified_' + $json.jobId, tenantEmail: $json.tenantEmail, occurredAt: $json.occurredAt, payload: { tenantId: $json.tenantId, usagePercent: $json.usagePercent, remainingPercent: $json.remainingPercent, usage: $json.usage, callId: $json.callId } } }}",
+        "options": {}
+      },
+      "id": "HTTP_Log80",
+      "name": "Log Usage 70 Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1180,
+        340
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "continueOnFail": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, route: ($json.usagePercent >= 100 ? 'usage_threshold_100_logged' : ($json.usagePercent >= 80 ? 'usage_threshold_80_logged' : 'below_threshold_no_alert')), usagePercent: $json.usagePercent, callId: $json.callId, executionId: $execution.id } }}",
+        "options": {}
+      },
+      "id": "Respond_Done",
+      "name": "Respond Usage Alert Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1420,
+        260
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Usage Threshold Alert": {
+      "main": [
+        [
+          {
+            "node": "Normalize Usage Alert Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Usage Alert Input": {
+      "main": [
+        [
+          {
+            "node": "IF Usage >= 100%?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Usage >= 100%?": {
+      "main": [
+        [
+          {
+            "node": "Log Usage 100 Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF Usage >= 70%?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Usage 100 Alert": {
+      "main": [
+        [
+          {
+            "node": "Respond Usage Alert Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Usage >= 70%?": {
+      "main": [
+        [
+          {
+            "node": "Log Usage 70 Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Usage Alert Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Usage 70 Alert": {
+      "main": [
+        [
+          {
+            "node": "Respond Usage Alert Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "1"
+}

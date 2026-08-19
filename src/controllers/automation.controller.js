@@ -255,7 +255,7 @@ exports.dispatchNotificationLegacy = async (req, res) => {
 
         const notificationType = req.body.type || 'notification.dispatch';
         const mappedType = notificationType === 'usage.threshold.alert'
-            ? (Number(req.body.payload?.usagePercent || 0) >= 100 ? 'usage.threshold.100' : 'usage.threshold.80')
+            ? (Number(req.body.payload?.usagePercent || 0) >= 100 ? 'usage.threshold.100' : 'usage.threshold.70')
             : notificationType;
 
         const payload = {

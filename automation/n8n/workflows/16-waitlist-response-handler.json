@@ -1,0 +1,186 @@
+{
+  "name": "QC - Waitlist Response Handler",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "qc-v2-waitlist-response",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {},
+        "authentication": "headerAuth"
+      },
+      "id": "Webhook_Waitlist",
+      "name": "Webhook Waitlist Response",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        280
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const first = $input.first()?.json || {};\nconst job = first.body || first;\nconst tenant = job.tenant || {};\nconst payload = job.payload || job;\nreturn [{ json: {\n  jobType: job.jobType || 'waitlist.response',\n  jobId: job.jobId || payload.idempotencyKey || 'waitlist_' + Date.now(),\n  tenantId: String(tenant.id || ''),\n  tenantEmail: tenant.email || job.tenantEmail || '',\n  waitlistEntryId: payload.waitlistEntryId || '',\n  customerPhone: payload.customerPhone || payload.from || '',\n  reply: payload.reply || payload.text || payload.message || '',\n  occurredAt: job.occurredAt || new Date().toISOString()\n} }];"
+      },
+      "id": "Code_Normalize",
+      "name": "Normalize Waitlist Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/waitlist/respond'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { waitlistEntryId: $json.waitlistEntryId, customerPhone: $json.customerPhone, reply: $json.reply, tenantEmail: $json.tenantEmail, metadata: { source: 'waitlist.reply.workflow' } } }}",
+        "options": {}
+      },
+      "id": "HTTP_ProcessReply",
+      "name": "Process Waitlist Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        700,
+        280
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1200,
+      "continueOnFail": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const request = $('Normalize Waitlist Reply').first().json || {};\nconst response = $input.first()?.json || {};\nconst data = response.data || {};\nconst accepted = Boolean(data.accepted);\nreturn [{ json: {\n  customerPhone: request.customerPhone,\n  customerName: data.customerName || 'Customer',\n  accepted,\n  handled: Boolean(data.handled),\n  status: data.status || 'pending',\n  message: accepted\n    ? 'Great news! The slot is now reserved for you. We will send full details shortly.'\n    : 'Thank you. We have marked your response and will keep you on the waitlist for future openings.'\n} }];"
+      },
+      "id": "Code_BuildSms",
+      "name": "Build Waitlist SMS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        940,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "from": "={{$vars.QC_TWILIO_FROM_NUMBER || ''}}",
+        "to": "={{$json.customerPhone}}",
+        "message": "={{$json.message}}"
+      },
+      "id": "Twilio_SendAck",
+      "name": "Send Waitlist Ack SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        1180,
+        280
+      ],
+      "continueOnFail": true,
+      "credentials": {
+        "twilioApi": {
+          "id": "QC_TWILIO_API_CRED",
+          "name": "Quantum Twilio"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, handled: $json.handled, status: $json.status, accepted: $json.accepted, executionId: $execution.id } }}",
+        "options": {}
+      },
+      "id": "Respond_Done",
+      "name": "Respond Waitlist Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1420,
+        280
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Waitlist Response": {
+      "main": [
+        [
+          {
+            "node": "Normalize Waitlist Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Waitlist Reply": {
+      "main": [
+        [
+          {
+            "node": "Process Waitlist Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Waitlist Reply": {
+      "main": [
+        [
+          {
+            "node": "Build Waitlist SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Waitlist SMS": {
+      "main": [
+        [
+          {
+            "node": "Send Waitlist Ack SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Waitlist Ack SMS": {
+      "main": [
+        [
+          {
+            "node": "Respond Waitlist Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "1"
+}

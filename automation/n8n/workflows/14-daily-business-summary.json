@@ -1,0 +1,231 @@
+{
+  "name": "QC - Daily Business Summary",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 20
+            }
+          ]
+        }
+      },
+      "id": "Cron_Daily",
+      "name": "Daily Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        220,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/tenants/daily-summary'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "Code_BuildTenants",
+      "name": "List Active Tenants",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        460,
+        260
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first()?.json || {};\nconst targetDate = new Date().toISOString().slice(0, 10);\nconst tenants = Array.isArray(response.data) ? response.data : [];\nreturn tenants.map((tenant) => ({ json: { tenantId: String(tenant.id), tenantEmail: tenant.email, inboundNumber: tenant.inboundNumber, timezone: tenant.timezone || 'UTC', targetDate } }));"
+      },
+      "id": "IF_Skip",
+      "name": "Expand Active Tenants",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/summaries/daily'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { tenantEmail: $json.tenantEmail, targetDate: $json.targetDate } }}",
+        "options": {}
+      },
+      "id": "HTTP_GenerateSummary",
+      "name": "Generate Daily Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        944,
+        340
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "continueOnFail": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const req = $('Expand Active Tenants').item.json || {};\nconst api = $input.first()?.json || {};\nconst data = api.data || {};\nreturn [{ json: {\n  tenantId: req.tenantId,\n  tenantEmail: req.tenantEmail,\n  targetDate: req.targetDate,\n  summary: data,\n  summaryText: `Daily Summary (${data.date || req.targetDate})\\nTotal Calls: ${data.totalCalls || 0}\\nBookings: ${data.bookings || 0}\\nCancellations: ${data.cancellations || 0}\\nEscalations: ${data.escalations || 0}\\nNo Shows: ${data.noShows || 0}\\nKB Queries: ${data.kbQueries || 0}`\n} }];"
+      },
+      "id": "Code_BuildSummaryMessage",
+      "name": "Build Summary Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1184,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$vars.QC_NOTIFICATION_FROM_EMAIL || 'no-reply@quantumconnects.local'}}",
+        "toEmail": "={{$json.tenantEmail}}",
+        "subject": "Daily Business Summary",
+        "message": "={{$json.summaryText}}",
+        "options": {}
+      },
+      "id": "Email_SendSummary",
+      "name": "Email Daily Summary",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1424,
+        340
+      ],
+      "continueOnFail": true,
+      "credentials": {
+        "smtp": {
+          "id": "QC_SMTP_ACCOUNT_CRED",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/events'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { source: 'n8n', eventType: 'daily.summary.email.sent', idempotencyKey: 'daily_summary_email_' + ($json.tenantEmail || 'unknown') + '_' + ($json.targetDate || ''), tenantEmail: $json.tenantEmail, occurredAt: new Date().toISOString(), payload: { summary: $json.summary || {}, targetDate: $json.targetDate } } }}",
+        "options": {}
+      },
+      "id": "HTTP_LogSummarySent",
+      "name": "Log Daily Summary Sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1664,
+        340
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1200,
+      "continueOnFail": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily Trigger": {
+      "main": [
+        [
+          {
+            "node": "List Active Tenants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Daily Summary": {
+      "main": [
+        [
+          {
+            "node": "Build Summary Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Summary Message": {
+      "main": [
+        [
+          {
+            "node": "Email Daily Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Daily Summary": {
+      "main": [
+        [
+          {
+            "node": "Log Daily Summary Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Active Tenants": {
+      "main": [
+        [
+          {
+            "node": "Expand Active Tenants",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand Active Tenants": {
+      "main": [
+        [
+          {
+            "node": "Generate Daily Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "1"
+}

@@ -8,7 +8,8 @@
     "dev": "nodemon src/server.js",
     "migrate": "node src/database/init.js",
     "seed": "node src/database/seed.js",
-    "test": "node --test --test-concurrency=1 test/*.test.js"
+    "test": "node --test --test-concurrency=1 test/*.test.js",
+    "automation:validate": "node automation/scripts/validate-assets.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

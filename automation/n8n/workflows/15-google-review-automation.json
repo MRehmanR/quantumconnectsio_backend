@@ -1,0 +1,334 @@
+{
+  "name": "QC - Google Review Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "qc-v2-google-review-automation",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {},
+        "authentication": "headerAuth"
+      },
+      "id": "Webhook_Review",
+      "name": "Webhook Google Review",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        280
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const first = $input.first()?.json || {};\nconst job = first.body || first;\nconst tenant = job.tenant || {};\nconst payload = job.payload || job;\nconst action = String(payload.action || 'request_rating').toLowerCase();\nconst ratingValue = Number(payload.rating ?? payload.reply);\nconst hasRating = Number.isFinite(ratingValue) && ratingValue >= 1 && ratingValue <= 10;\nreturn [{ json: {\n  jobType: job.jobType || 'review.requested',\n  jobId: job.jobId || payload.idempotencyKey || 'review_' + Date.now(),\n  action,\n  tenantId: String(tenant.id || ''),\n  tenantEmail: tenant.email || job.tenantEmail || '',\n  customerName: payload.customerName || 'Customer',\n  customerPhone: payload.customerPhone || '',\n  customerEmail: payload.customerEmail || '',\n  appointmentId: payload.appointmentId || '',\n  rating: hasRating ? Math.floor(ratingValue) : null,\n  freeTextReply: String(payload.freeTextReply || ''),\n  googleReviewUrl: payload.googleReviewUrl || $vars.QC_GOOGLE_REVIEW_URL || '',\n  occurredAt: job.occurredAt || new Date().toISOString()\n} }];"
+      },
+      "id": "Code_Normalize",
+      "name": "Normalize Review Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "RequestRating",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{$json.action}}",
+              "rightValue": "request_rating"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "IF_Request",
+      "name": "IF Request Rating?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        700,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "from": "={{$vars.QC_TWILIO_FROM_NUMBER || ''}}",
+        "to": "={{$json.customerPhone}}",
+        "message": "={{'Hi ' + ($json.customerName || 'Customer') + ', how would you rate your service from 1 to 10? Reply with a number.'}}"
+      },
+      "id": "Twilio_RequestRating",
+      "name": "Send Rating Request SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        940,
+        160
+      ],
+      "continueOnFail": true,
+      "credentials": {
+        "twilioApi": {
+          "id": "QC_TWILIO_API_CRED",
+          "name": "Quantum Twilio"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "LowRating",
+              "operator": {
+                "type": "number",
+                "operation": "lte"
+              },
+              "leftValue": "={{$json.rating || 0}}",
+              "rightValue": 6
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "IF_LowRating",
+      "name": "IF Rating <= 6?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        940,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "from": "={{$vars.QC_TWILIO_FROM_NUMBER || ''}}",
+        "to": "={{$json.customerPhone}}",
+        "message": "={{'Thank you. We are sorry to hear that. What could we have done better? Please reply with your feedback.'}}"
+      },
+      "id": "Twilio_AskFeedback",
+      "name": "Ask Improvement Feedback",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        1184,
+        300
+      ],
+      "continueOnFail": true,
+      "credentials": {
+        "twilioApi": {
+          "id": "QC_TWILIO_API_CRED",
+          "name": "Quantum Twilio"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "from": "={{$vars.QC_TWILIO_FROM_NUMBER || ''}}",
+        "to": "={{$json.customerPhone}}",
+        "message": "={{'Thank you for your great rating. Please leave us a Google review: ' + ($json.googleReviewUrl || '')}}"
+      },
+      "id": "Twilio_SendReviewLink",
+      "name": "Send Google Review Link",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        1184,
+        460
+      ],
+      "continueOnFail": true,
+      "credentials": {
+        "twilioApi": {
+          "id": "QC_TWILIO_API_CRED",
+          "name": "Quantum Twilio"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/events'}}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { source: 'n8n', eventType: 'google.review.automation', idempotencyKey: 'google_review_' + $json.jobId, tenantEmail: $json.tenantEmail, occurredAt: $json.occurredAt, payload: { tenantId: $json.tenantId, appointmentId: $json.appointmentId, rating: $json.rating, customerPhone: $json.customerPhone, customerEmail: $json.customerEmail, action: $json.action, freeTextReply: $json.freeTextReply } } }}",
+        "options": {}
+      },
+      "id": "HTTP_LogReviewEvent",
+      "name": "Log Review Automation Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1424,
+        360
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1200,
+      "continueOnFail": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "QC_AUTOMATION_KEY_CRED",
+          "name": "QC Automation Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, action: $json.action, rating: $json.rating, executionId: $execution.id } }}",
+        "options": {}
+      },
+      "id": "Respond_Done",
+      "name": "Respond Review Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1664,
+        360
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Google Review": {
+      "main": [
+        [
+          {
+            "node": "Normalize Review Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Review Input": {
+      "main": [
+        [
+          {
+            "node": "IF Request Rating?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Request Rating?": {
+      "main": [
+        [
+          {
+            "node": "Send Rating Request SMS",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF Rating <= 6?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Rating Request SMS": {
+      "main": [
+        [
+          {
+            "node": "Log Review Automation Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Rating <= 6?": {
+      "main": [
+        [
+          {
+            "node": "Ask Improvement Feedback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Google Review Link",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask Improvement Feedback": {
+      "main": [
+        [
+          {
+            "node": "Log Review Automation Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Google Review Link": {
+      "main": [
+        [
+          {
+            "node": "Log Review Automation Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Review Automation Event": {
+      "main": [
+        [
+          {
+            "node": "Respond Review Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "1"
+}
