@@ -5,7 +5,10 @@ const adminMiddleware = require('../middleware/admin.middleware');
 
 const router = express.Router();
 
-router.post('/retell/webhook', automationController.ingestRetellWebhook);
+router.post('/retell/inbound', automationController.handleRetellInbound);
+router.post('/retell/functions', automationController.handleRetellFunction);
+router.post('/retell/events', automationController.handleRetellEvent);
+router.post('/retell/webhook', automationController.handleRetellEvent);
 router.post('/events', automationController.ingestAutomationEvent);
 router.post('/workflow-executions', automationController.upsertWorkflowExecution);
 router.post('/call-preflight', automationController.preflightInboundCall);

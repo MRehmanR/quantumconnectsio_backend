@@ -16,7 +16,7 @@ const {
     AuditLog
 } = require('../models');
 const { sequelize } = require('../config/db');
-const { AUTOMATION_SHARED_KEY, RETELL_WEBHOOK_SECRET } = require('../config/env');
+const { AUTOMATION_SHARED_KEY, RETELL_API_KEY } = require('../config/env');
 const usageEnforcementService = require('./usage-enforcement.service');
 
 const normalizeIdempotencyKey = ({ idempotencyKey, eventType, occurredAt, payload }) => {
@@ -74,16 +74,12 @@ const timingSafeCompare = (left, right) => {
 };
 
 const verifyRetellSignature = ({ rawBody, signature }) => {
-    if (!RETELL_WEBHOOK_SECRET) {
-        return true;
-    }
-
-    if (!signature || !rawBody) {
-        return false;
-    }
-
-    const expected = crypto.createHmac('sha256', RETELL_WEBHOOK_SECRET).update(rawBody).digest('hex');
-    return timingSafeCompare(expected, signature);
+    const { verifyRetellRequest } = require('./retell-integration.service');
+    return verifyRetellRequest({
+        rawBody,
+        signature,
+        apiKey: RETELL_API_KEY
+    });
 };
 
 const verifyAutomationKey = (providedKey) => {

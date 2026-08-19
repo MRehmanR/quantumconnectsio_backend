@@ -117,6 +117,11 @@ const persistCallEvent = async (normalizedEvent) => {
             throw new Error('Retell tenant not found for inbound number');
         }
 
+        const metadataTenantId = String(normalizedEvent?.metadata?.tenantId || '').trim();
+        if (metadataTenantId && metadataTenantId !== String(tenant.id)) {
+            throw new Error('Retell call tenant mismatch');
+        }
+
         let callLog = await CallLog.findOne({
             where: { retellCallId: callId },
             transaction
@@ -486,6 +491,57 @@ const executeRetellTool = async (normalizedFunction) => {
     return result;
 };
 
+const processRetellCallEvent = async (normalizedEvent) => {
+    const supportedEvents = new Set(['call_started', 'call_ended', 'call_analyzed']);
+    if (!supportedEvents.has(normalizedEvent?.event)) {
+        return { ignored: true, duplicated: false };
+    }
+
+    const persisted = await persistCallEvent(normalizedEvent);
+    if (normalizedEvent.event !== 'call_ended') {
+        return { ...persisted, duplicated: false };
+    }
+
+    const { AutomationEvent } = require('../models');
+    const idempotencyKey = `retell:call_ended:${normalizedEvent.callId}`;
+    const [event, created] = await AutomationEvent.findOrCreate({
+        where: { idempotencyKey },
+        defaults: {
+            source: 'retell',
+            eventType: 'call.ended.finalized',
+            tenantEmail: '',
+            occurredAt: normalizedEvent.endedAt || new Date(),
+            payload: { callId: normalizedEvent.callId },
+            status: 'received'
+        }
+    });
+
+    if (!created) {
+        return { ...persisted, duplicated: true };
+    }
+
+    const tenant = await resolveTenantByInboundNumber(normalizedEvent.toNumber);
+    const { finalizeInboundCall } = require('./automation.service');
+    const finalization = await finalizeInboundCall({
+        tenantEmail: tenant.email,
+        dialedNumber: tenant.inboundNumber,
+        wasConnected: Number(normalizedEvent.durationSeconds || 0) > 0
+    });
+
+    await event.update({
+        tenantEmail: tenant.email,
+        payload: {
+            callId: normalizedEvent.callId,
+            result: finalization
+        },
+        status: 'processed',
+        processedAt: new Date(),
+        errorMessage: ''
+    });
+
+    return { ...persisted, duplicated: false, finalization };
+};
+
 module.exports = {
     parseRetellSignature,
     verifyRetellRequest,
@@ -494,5 +550,6 @@ module.exports = {
     normalizeCallEvent,
     persistCallEvent,
     handleInboundCall,
-    executeRetellTool
+    executeRetellTool,
+    processRetellCallEvent
 };

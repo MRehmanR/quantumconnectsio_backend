@@ -1,6 +1,8 @@
 const automationService = require('../services/automation.service');
 const provisioningService = require('../services/provisioning.service');
 const dashboardDataService = require('../services/dashboard-data.service');
+const retellIntegrationService = require('../services/retell-integration.service');
+const { RETELL_API_KEY } = require('../config/env');
 
 const readSignature = (req) => req.headers['x-retell-signature'] || req.headers['x-webhook-signature'] || '';
 
@@ -22,33 +24,69 @@ const getDialedNumber = (body = {}) =>
 const getCallerNumber = (body = {}) =>
     body.callerNumber || body.callerPhone || body.from_number || body.from || body.From || body.payload?.from_number || body.payload?.from || body.payload?.From;
 
-exports.ingestRetellWebhook = async (req, res) => {
-    try {
-        const signature = readSignature(req);
-        const validSignature = automationService.verifyRetellSignature({
-            rawBody: req.rawBody,
-            signature
-        });
+const requireRetellSignature = (req, res) => {
+    const valid = retellIntegrationService.verifyRetellRequest({
+        rawBody: req.rawBody,
+        signature: readSignature(req),
+        apiKey: RETELL_API_KEY
+    });
 
-        if (!validSignature) {
-            return res.status(401).json({ success: false, message: 'Invalid webhook signature' });
+    if (!valid) {
+        res.status(401).json({ success: false, message: 'Invalid Retell signature' });
+        return false;
+    }
+
+    return true;
+};
+
+exports.handleRetellInbound = async (req, res) => {
+    try {
+        if (!requireRetellSignature(req, res)) {
+            return;
         }
 
-        const data = await automationService.ingestEvent({
-            source: 'retell',
-            eventType: req.body.eventType || req.body.type,
-            idempotencyKey: req.body.idempotencyKey || req.body.eventId,
-            tenantEmail: req.body.tenantEmail || req.body.accountEmail || req.body?.metadata?.tenantEmail,
-            occurredAt: req.body.occurredAt,
-            payload: req.body.payload || req.body
+        const normalized = retellIntegrationService.normalizeInboundRequest(req.body);
+        const result = await retellIntegrationService.handleInboundCall(normalized, {
+            preflightKey: req.body?.call_inbound?.call_id || req.body?.event_id || ''
         });
 
-        return res.status(202).json({ success: true, data });
+        return res.status(200).json(result);
     } catch (error) {
-        return res.status(500).json({ success: false, message: error.message || 'Failed to process webhook' });
+        return res.status(500).json({ success: false, message: error.message || 'Failed to route inbound call' });
     }
 };
 
+exports.handleRetellFunction = async (req, res) => {
+    try {
+        if (!requireRetellSignature(req, res)) {
+            return;
+        }
+
+        const normalized = retellIntegrationService.normalizeFunctionRequest(req.body);
+        const result = await retellIntegrationService.executeRetellTool(normalized);
+
+        return res.status(200).json(result);
+    } catch (error) {
+        return res.status(500).json({ success: false, message: error.message || 'Failed to execute Retell function' });
+    }
+};
+
+exports.handleRetellEvent = async (req, res) => {
+    try {
+        if (!requireRetellSignature(req, res)) {
+            return;
+        }
+
+        const normalized = retellIntegrationService.normalizeCallEvent(req.body);
+        const data = await retellIntegrationService.processRetellCallEvent(normalized);
+
+        return res.status(202).json({ success: true, data });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: error.message || 'Failed to process Retell event' });
+    }
+};
+
+exports.ingestRetellWebhook = exports.handleRetellEvent;
 exports.identifyInboundClient = async (req, res) => {
     try {
         if (!requireAutomationKey(req, res)) {
