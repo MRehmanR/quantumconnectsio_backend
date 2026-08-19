@@ -16,6 +16,7 @@ const {
     RETELL_LLM_ID,
     RETELL_CONVERSATION_FLOW_ID,
     RETELL_WEBHOOK_URL,
+    PUBLIC_API_BASE_URL,
     RETELL_SIP_TERMINATION_URI,
     RETELL_SIP_TRUNK_AUTH_USERNAME,
     RETELL_SIP_TRUNK_AUTH_PASSWORD,
@@ -111,6 +112,213 @@ const requestText = ({ method = 'GET', url, headers = {} }) =>
         req.on('error', reject);
         req.end();
     });
+
+const MANAGED_RETELL_TOOL_NAMES = [
+    'get_business_information',
+    'find_upcoming_appointments',
+    'check_appointment_availability',
+    'book_appointment',
+    'reschedule_appointment',
+    'cancel_appointment'
+];
+
+const normalizePublicApiBaseUrl = (value) => {
+    const normalized = String(value || '').trim().replace(/\/+$/, '');
+    if (!normalized) {
+        throw new Error('PUBLIC_API_BASE_URL is required for Retell integration synchronization.');
+    }
+
+    let parsed;
+    try {
+        parsed = new URL(normalized);
+    } catch {
+        throw new Error('PUBLIC_API_BASE_URL must be a valid absolute URL.');
+    }
+
+    if (parsed.protocol !== 'https:' && process.env.NODE_ENV !== 'development') {
+        throw new Error('PUBLIC_API_BASE_URL must use HTTPS outside local development.');
+    }
+
+    return normalized;
+};
+
+const buildRetellToolDefinitions = (publicApiBaseUrl = PUBLIC_API_BASE_URL) => {
+    const baseUrl = normalizePublicApiBaseUrl(publicApiBaseUrl);
+    const url = `${baseUrl}/api/automation/retell/functions`;
+    const stringProperty = (description) => ({ type: 'string', description });
+    const createTool = ({ name, description, properties, required = [] }) => ({
+        type: 'custom',
+        name,
+        description,
+        url,
+        method: 'POST',
+        headers: {},
+        parameters: {
+            type: 'object',
+            properties,
+            required
+        },
+        speak_during_execution: true,
+        speak_after_execution: true,
+        execution_message_type: 'prompt',
+        execution_message_description: 'Briefly tell the caller you are checking that information.',
+        timeout_ms: 10_000,
+        max_retry: 1,
+        args_at_root: false,
+        parameter_type: 'json'
+    });
+
+    return [
+        createTool({
+            name: 'get_business_information',
+            description: 'Search this business account knowledge base. Use for services, policies, hours, locations, prices, and other business questions.',
+            properties: {
+                query: stringProperty('The caller question or the specific business information to find.')
+            },
+            required: ['query']
+        }),
+        createTool({
+            name: 'find_upcoming_appointments',
+            description: 'Find upcoming appointments for the current caller at this business before rescheduling or cancelling.',
+            properties: {}
+        }),
+        createTool({
+            name: 'check_appointment_availability',
+            description: 'Get currently available appointment times for a date at this business.',
+            properties: {
+                date: stringProperty('Appointment date in YYYY-MM-DD format.')
+            },
+            required: ['date']
+        }),
+        createTool({
+            name: 'book_appointment',
+            description: 'Book a confirmed appointment after the caller has chosen an available date and time and confirmed their details.',
+            properties: {
+                customer_name: stringProperty('Full customer name.'),
+                customer_phone: stringProperty('Customer phone number. Omit to use the current caller number.'),
+                customer_email: stringProperty('Customer email address when provided.'),
+                date: stringProperty('Appointment date in YYYY-MM-DD format.'),
+                time: stringProperty('Appointment time in 24-hour HH:mm format.'),
+                service_type: stringProperty('Service or appointment type requested by the caller.')
+            },
+            required: ['customer_name', 'date', 'time']
+        }),
+        createTool({
+            name: 'reschedule_appointment',
+            description: 'Move an appointment belonging to the current caller and this business to a newly confirmed date and time.',
+            properties: {
+                appointment_id: stringProperty('Appointment identifier returned by find_upcoming_appointments.'),
+                new_date: stringProperty('New appointment date in YYYY-MM-DD format.'),
+                new_time: stringProperty('New appointment time in 24-hour HH:mm format.')
+            },
+            required: ['appointment_id', 'new_date', 'new_time']
+        }),
+        createTool({
+            name: 'cancel_appointment',
+            description: 'Cancel an appointment belonging to the current caller and this business after the caller confirms cancellation.',
+            properties: {
+                appointment_id: stringProperty('Appointment identifier returned by find_upcoming_appointments.'),
+                reason: stringProperty('Short cancellation reason when the caller provides one.')
+            },
+            required: ['appointment_id']
+        })
+    ];
+};
+
+const syncRetellIntegrationForUser = async (user, options = {}) => {
+    if (!user?.id || !user?.inboundNumber || !user?.retellAgentId) {
+        throw new Error('A provisioned user, inbound number, and Retell agent id are required.');
+    }
+    if (!RETELL_API_KEY) {
+        throw new Error('RETELL_API_KEY is required for Retell integration synchronization.');
+    }
+
+    const request = options.request || requestJson;
+    const dryRun = Boolean(options.dryRun);
+    const publicBaseUrl = normalizePublicApiBaseUrl(options.publicApiBaseUrl || PUBLIC_API_BASE_URL);
+    const retellBaseUrl = String(RETELL_API_BASE_URL || 'https://api.retellai.com').trim().replace(/\/$/, '');
+    const authorization = { Authorization: `Bearer ${RETELL_API_KEY}` };
+    const agentId = String(user.retellAgentId).trim();
+    const phoneNumber = String(user.inboundNumber).trim();
+    const agent = await request({
+        method: 'GET',
+        url: `${retellBaseUrl}/get-agent/${encodeURIComponent(agentId)}`,
+        headers: authorization
+    });
+    const responseEngine = agent?.response_engine || {};
+    if (responseEngine.type !== 'retell-llm' || !responseEngine.llm_id) {
+        throw new Error('Retell integration tools currently require a retell-llm response engine.');
+    }
+
+    const llmId = String(responseEngine.llm_id);
+    const llm = await request({
+        method: 'GET',
+        url: `${retellBaseUrl}/get-retell-llm/${encodeURIComponent(llmId)}`,
+        headers: authorization
+    });
+    const managedNames = new Set(MANAGED_RETELL_TOOL_NAMES);
+    const existingTools = Array.isArray(llm?.general_tools) ? llm.general_tools : [];
+    const preservedTools = existingTools.filter((tool) => !managedNames.has(String(tool?.name || '')));
+    const mergedTools = [
+        ...preservedTools,
+        ...buildRetellToolDefinitions(publicBaseUrl)
+    ];
+    const changes = [
+        'phone.inbound_webhook_url',
+        'agent.webhook_url',
+        'agent.webhook_events',
+        'llm.general_tools'
+    ];
+
+    if (dryRun) {
+        return {
+            userId: String(user.id),
+            applied: false,
+            dryRun: true,
+            promptPreserved: true,
+            changes
+        };
+    }
+
+    await request({
+        method: 'PATCH',
+        url: `${retellBaseUrl}/update-phone-number/${encodeURIComponent(phoneNumber)}`,
+        headers: authorization,
+        body: {
+            inbound_webhook_url: `${publicBaseUrl}/api/automation/retell/inbound`
+        }
+    });
+    await request({
+        method: 'PATCH',
+        url: `${retellBaseUrl}/update-agent/${encodeURIComponent(agentId)}`,
+        headers: authorization,
+        body: {
+            webhook_url: `${publicBaseUrl}/api/automation/retell/events`,
+            webhook_events: ['call_started', 'call_ended', 'call_analyzed']
+        }
+    });
+    await request({
+        method: 'PATCH',
+        url: `${retellBaseUrl}/update-retell-llm/${encodeURIComponent(llmId)}`,
+        headers: authorization,
+        body: { general_tools: mergedTools }
+    });
+
+    return {
+        userId: String(user.id),
+        applied: true,
+        dryRun: false,
+        promptPreserved: true,
+        changes
+    };
+};
+
+const syncRetellIntegrationWhenConfigured = async (user) => {
+    if (!String(PUBLIC_API_BASE_URL || '').trim()) {
+        return { skipped: true, reason: 'public_api_base_url_not_configured' };
+    }
+    return syncRetellIntegrationForUser(user);
+};
 
 const PROVISIONING_ERROR_MAX_LEN = 240;
 const normalizeProvisioningError = (value, fallback = '') => {
@@ -1138,6 +1346,8 @@ const provisionRetellAgentForUser = async (userId, options = {}) => {
                     agentId: user.retellAgentId
                 });
 
+                await syncRetellIntegrationWhenConfigured(user);
+
                 user.provisioningStatus = 'active';
                 user.provisioningError = '';
                 await user.save();
@@ -1204,6 +1414,8 @@ const provisionRetellAgentForUser = async (userId, options = {}) => {
                 throw bindError;
             }
         }
+
+        await syncRetellIntegrationWhenConfigured(user);
 
         user.provisioningStatus = 'active';
         user.provisioningError = '';
@@ -1416,6 +1628,8 @@ const provisionForUser = async (userId, options = {}) => {
                     throw bindError;
                 }
             }
+
+            await syncRetellIntegrationWhenConfigured(user);
         }
 
         if ((twilio.skipped || twilio.phoneNumber) && (retell.skipped || retell.retellAgentId)) {
@@ -1462,6 +1676,8 @@ module.exports = {
     purchaseTwilioNumber,
     listAvailableNumbersForUser,
     provisionRetellAgentForUser,
+    buildRetellToolDefinitions,
+    syncRetellIntegrationForUser,
     generateRetellPromptForUser,
     importWebsiteKnowledgeBaseForUser
 };
