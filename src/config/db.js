@@ -260,6 +260,16 @@ const ensureSchemaColumns = async () => {
         );
     }
 
+    const callLogsTable = await queryInterface.describeTable('call_logs');
+    if (!callLogsTable.retellCallId) {
+        await queryInterface.addColumn('call_logs', 'retellCallId', {
+            type: Sequelize.STRING,
+            allowNull: true,
+            unique: true,
+            defaultValue: null
+        });
+    }
+
     const appointmentsTable = await queryInterface.describeTable('appointments');
     if (!appointmentsTable.depositStatus) {
         await queryInterface.addColumn('appointments', 'depositStatus', {

@@ -14,6 +14,12 @@ const CallLog = sequelize.define(
             allowNull: true,
             defaultValue: null
         },
+        retellCallId: {
+            type: DataTypes.STRING,
+            allowNull: true,
+            unique: true,
+            defaultValue: null
+        },
         inboundNumber: {
             type: DataTypes.STRING,
             allowNull: false,

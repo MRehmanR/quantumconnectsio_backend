@@ -89,10 +89,107 @@ const normalizeCallEvent = (body = {}) => {
     };
 };
 
+const persistCallEvent = async (normalizedEvent) => {
+    const { User, CallLog, CallContact } = require('../models');
+    const { sequelize } = require('../config/db');
+    const { normalizePhone } = require('../utils/phone');
+
+    const callId = String(normalizedEvent?.callId || '').trim();
+    if (!callId) {
+        throw new Error('Retell call id is required');
+    }
+
+    const rawInbound = String(normalizedEvent?.toNumber || '').trim();
+    const normalizedInbound = /^\+[1-9]\d{7,14}$/.test(rawInbound)
+        ? { ok: true, e164: rawInbound }
+        : normalizePhone(rawInbound, {});
+    if (!normalizedInbound.ok || !normalizedInbound.e164) {
+        throw new Error('Retell tenant not found for inbound number');
+    }
+
+    return sequelize.transaction(async (transaction) => {
+        const tenant = await User.findOne({
+            where: { inboundNumber: normalizedInbound.e164 },
+            transaction
+        });
+
+        if (!tenant) {
+            throw new Error('Retell tenant not found for inbound number');
+        }
+
+        let callLog = await CallLog.findOne({
+            where: { retellCallId: callId },
+            transaction
+        });
+        let created = false;
+
+        if (callLog && Number(callLog.userId) !== Number(tenant.id)) {
+            throw new Error('Retell call tenant mismatch');
+        }
+
+        const sentiment = ['Positive', 'Neutral', 'Negative'].includes(normalizedEvent.sentiment)
+            ? normalizedEvent.sentiment
+            : 'Neutral';
+        const caller = normalizePhone(normalizedEvent.fromNumber, {
+            referenceE164: tenant.inboundNumber
+        });
+        const callerNumber = caller.ok && caller.e164
+            ? caller.e164
+            : String(normalizedEvent.fromNumber || 'Unknown');
+
+        if (!callLog) {
+            callLog = await CallLog.create({
+                userId: tenant.id,
+                retellCallId: callId,
+                inboundNumber: tenant.inboundNumber,
+                callerNumber,
+                callTime: normalizedEvent.startedAt || new Date(),
+                durationSeconds: Number(normalizedEvent.durationSeconds || 0),
+                sentiment,
+                status: 'Completed',
+                transcript: String(normalizedEvent.transcript || '')
+            }, { transaction });
+            created = true;
+        } else {
+            const updates = {};
+            if (normalizedEvent.startedAt) updates.callTime = normalizedEvent.startedAt;
+            if (Number(normalizedEvent.durationSeconds) > 0) {
+                updates.durationSeconds = Number(normalizedEvent.durationSeconds);
+            }
+            if (normalizedEvent.transcript) updates.transcript = normalizedEvent.transcript;
+            if (normalizedEvent.sentiment) updates.sentiment = sentiment;
+            if (Object.keys(updates).length > 0) {
+                await callLog.update(updates, { transaction });
+            }
+        }
+
+        const [contact, contactCreated] = await CallContact.findOrCreate({
+            where: { callLogId: callLog.id },
+            defaults: {
+                name: 'Unknown Caller',
+                phone: callerNumber,
+                email: ''
+            },
+            transaction
+        });
+
+        if (!contactCreated && callerNumber && contact.phone !== callerNumber) {
+            await contact.update({ phone: callerNumber }, { transaction });
+        }
+
+        return {
+            callLogId: callLog.id,
+            created,
+            finalized: normalizedEvent.event === 'call_ended'
+        };
+    });
+};
+
 module.exports = {
     parseRetellSignature,
     verifyRetellRequest,
     normalizeInboundRequest,
     normalizeFunctionRequest,
-    normalizeCallEvent
+    normalizeCallEvent,
+    persistCallEvent
 };
