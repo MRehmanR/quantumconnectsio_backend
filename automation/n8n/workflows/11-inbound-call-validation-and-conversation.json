@@ -76,62 +76,6 @@
             "caseSensitive": true,
             "typeValidation": "strict"
           },
-          "combinator": "and",
-          "conditions": [
-            {
-              "id": "Usage80",
-              "operator": {
-                "type": "boolean",
-                "operation": "true",
-                "singleValue": true
-              },
-              "leftValue": "={{$json.usagePercent}}",
-              "rightValue": 70
-            }
-          ]
-        },
-        "options": {}
-      },
-      "id": "6c3f8f3e-ff94-4166-9766-d9baa6819172",
-      "name": "IF Usage >= 70%?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        -1344,
-        272
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{$vars.N8N_BASE_URL + '/webhook/qc-v2-usage-threshold-alert'}}",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ { jobType: $json.usagePercent >= 100 ? 'usage.threshold.100' : 'usage.threshold.70', jobId: 'usage_' + $json.idempotencyKey, tenant: { id: String($json.tenantId || $json.tenantEmail), email: $json.tenantEmail, inboundNumber: $json.dialedNumber, timezone: $json.tenantTimezone || 'UTC' }, occurredAt: new Date().toISOString(), payload: { callId: $json.callId, usagePercent: $json.usagePercent, remainingPercent: $json.remainingPercent, usage: $json.usage, threshold: $json.usagePercent >= 100 ? 100 : 70 } } }}",
-        "options": {}
-      },
-      "id": "b171ea27-12fb-4c9c-9d66-7539c0aa025c",
-      "name": "Trigger Usage Alert Workflow",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        -1088,
-        112
-      ],
-      "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 1500,
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "version": 2,
-            "leftValue": "",
-            "caseSensitive": true,
-            "typeValidation": "strict"
-          },
           "conditions": [
             {
               "id": "Accepted",
@@ -159,53 +103,6 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "={{($vars.RETELL_API_BASE_URL || 'https://api.retellai.com/v2') + '/calls/' + ($json.callId || '') + '/transfer'}}",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            },
-            {
-              "name": "Idempotency-Key",
-              "value": "={{'fallback_' + $json.idempotencyKey}}"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ { to_number: $json.ownerPhone || '', reason: $json.preflightReason || 'usage_or_inactive_fallback' } }}",
-        "options": {}
-      },
-      "id": "ca46909c-e1e9-4f4a-ac8b-379bfc14dc1c",
-      "name": "Route To Owner/Fallback",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        -624,
-        464
-      ],
-      "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 1500,
-      "credentials": {
-        "httpBearerAuth": {
-          "id": "fyZ2z9FLnbYftPSm",
-          "name": "ServiceM8"
-        },
-        "httpHeaderAuth": {
-          "id": "3h3ca6PEqH8yPPq3",
-          "name": "RetellAI"
-        }
-      },
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
         "jsCode": "return [{\n  json: {\n    ...$json,\n    route: 'fallback_owner',\n    success: false,\n    message: 'Call routed to owner fallback.'\n  }\n}]"
       },
       "id": "20132035-7c1a-4aa4-8523-aa9bad8bfdbb",
@@ -216,36 +113,6 @@
         -384,
         464
       ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/call-finalize'}}",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ { tenantEmail: $json.tenantEmail, dialedNumber: $json.dialedNumber, wasConnected: false } }}",
-        "options": {}
-      },
-      "id": "e51284bc-0905-4e40-baa8-9db9a2d0075e",
-      "name": "Finalize Fallback Call",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        -144,
-        624
-      ],
-      "retryOnFail": true,
-      "maxTries": 2,
-      "waitBetweenTries": 1000,
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "QC_AUTOMATION_KEY_CRED",
-          "name": "QC Automation Key"
-        }
-      },
-      "continueOnFail": true
     },
     {
       "parameters": {
@@ -758,103 +625,7 @@
     },
     {
       "parameters": {
-        "from": "={{ $json.dialedNumber }}",
-        "to": "={{ $json.callerNumber }}",
-        "message": "=Dear  {{ $json.booking.customerName }} Your Boking Is Confirmed for{{ $json.booking.type }} . Date and time is {{ $json.booking.date }}, {{ $json.booking.time }}",
-        "options": {}
-      },
-      "id": "ad3f0ad8-20bc-4d46-9b7c-67e79eee3630",
-      "name": "Send Booking Confirmation SMS",
-      "type": "n8n-nodes-base.twilio",
-      "typeVersion": 1,
-      "position": [
-        928,
-        -112
-      ],
-      "credentials": {
-        "twilioApi": {
-          "id": "ey7uQPmJvBnpf2VP",
-          "name": "Quantum Twilio"
-        }
-      },
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "fromEmail": "={{$vars.QC_NOTIFICATION_FROM_EMAIL || 'no-reply@quantumconnects.local'}}",
-        "toEmail": "={{ $('Build Booking Success').item.json.customerEmail }}",
-        "subject": "Appointment Booking Confirmed",
-        "html": "=<div style=\"background:#f4f6f8; padding:20px; font-family:Arial, sans-serif;\">\n  \n  <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:600px; margin:auto; background:#ffffff; border-radius:8px; padding:20px;\">\n    \n    <tr>\n      <td style=\"text-align:center; padding-bottom:20px;\">\n        <h2 style=\"margin:0; color:#2c3e50;\">Booking Confirmed ✅</h2>\n      </td>\n    </tr>\n\n    <tr>\n      <td style=\"padding-bottom:10px; color:#333;\">\n        Dear <strong>{{ $('Build Booking Success').item.json.customerName }}</strong>,\n      </td>\n    </tr>\n\n    <tr>\n      <td style=\"padding-bottom:20px; color:#555;\">\n        Your booking has been successfully confirmed. Here are your appointment details:\n      </td>\n    </tr>\n\n    <tr>\n      <td>\n        <table width=\"100%\" cellpadding=\"8\" cellspacing=\"0\" style=\"border:1px solid #e0e0e0; border-radius:6px;\">\n          \n          <tr>\n            <td style=\"background:#f9fafb;\"><strong>Service</strong></td>\n            <td>{{ $('Build Booking Success').item.json.service }}</td>\n          </tr>\n          \n          <tr>\n            <td style=\"background:#f9fafb;\"><strong>Date</strong></td>\n            <td>{{ $('Build Booking Success').item.json.requestedDate }}</td>\n          </tr>\n          \n          <tr>\n            <td style=\"background:#f9fafb;\"><strong>Time</strong></td>\n            <td>{{ $('Build Booking Success').item.json.requestedTime }}</td>\n          </tr>\n\n        </table>\n      </td>\n    </tr>\n\n    <tr>\n      <td style=\"padding-top:20px; color:#666;\">\n        If you need to reschedule or cancel your appointment, please contact us.\n      </td>\n    </tr>\n\n  </table>\n\n</div>",
-        "options": {}
-      },
-      "id": "7da585e0-66a3-47f5-b86b-5b55c9a903e1",
-      "name": "Send Booking Confirmation Email",
-      "type": "n8n-nodes-base.emailSend",
-      "typeVersion": 2.1,
-      "position": [
-        1168,
-        -112
-      ],
-      "webhookId": "4a0e84bc-b6d0-47d3-b636-d69defdd7ec6",
-      "credentials": {
-        "smtp": {
-          "id": "OAJiqdPNORIduM3f",
-          "name": "SMTP account"
-        }
-      },
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "from": "={{ $json.dialedNumber }}",
-        "to": "={{ $json.callerNumber }}",
-        "message": "=Dear {{ $json.customerName }}, \nYour booking for {{ $json.service }} scheduled on {{ $json.requestedDate }} at {{ $json.requestedTime }} has been cancelled. \nIf you would like to reschedule, please feel free to contact us.",
-        "options": {}
-      },
-      "id": "37f94612-e96a-4de5-89f8-22fc3d1c6155",
-      "name": "Send Booking Confirmation SMS1",
-      "type": "n8n-nodes-base.twilio",
-      "typeVersion": 1,
-      "position": [
-        1072,
-        592
-      ],
-      "credentials": {
-        "twilioApi": {
-          "id": "ey7uQPmJvBnpf2VP",
-          "name": "Quantum Twilio"
-        }
-      },
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "fromEmail": "={{$vars.QC_NOTIFICATION_FROM_EMAIL || 'no-reply@quantumconnects.local'}}",
-        "toEmail": "={{ $('Build Booking Success').item.json.customerEmail }}",
-        "subject": "Appointment Booking Confirmed",
-        "html": "=<div style=\"background:#f4f6f8; padding:20px; font-family:Arial, sans-serif;\">\n  \n  <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:600px; margin:auto; background:#ffffff; border-radius:8px; padding:20px;\">\n    \n    <tr>\n      <td style=\"text-align:center; padding-bottom:20px;\">\n        <h2 style=\"margin:0; color:#2c3e50;\">Booking Confirmed ✅</h2>\n      </td>\n    </tr>\n\n    <tr>\n      <td style=\"padding-bottom:10px; color:#333;\">\n        Dear <strong>{{ $('Build Booking Success').item.json.customerName }}</strong>,\n      </td>\n    </tr>\n\n    <tr>\n      <td style=\"padding-bottom:20px; color:#555;\">\n        Your booking has been successfully confirmed. Here are your appointment details:\n      </td>\n    </tr>\n\n    <tr>\n      <td>\n        <table width=\"100%\" cellpadding=\"8\" cellspacing=\"0\" style=\"border:1px solid #e0e0e0; border-radius:6px;\">\n          \n          <tr>\n            <td style=\"background:#f9fafb;\"><strong>Service</strong></td>\n            <td>{{ $('Build Booking Success').item.json.service }}</td>\n          </tr>\n          \n          <tr>\n            <td style=\"background:#f9fafb;\"><strong>Date</strong></td>\n            <td>{{ $('Build Booking Success').item.json.requestedDate }}</td>\n          </tr>\n          \n          <tr>\n            <td style=\"background:#f9fafb;\"><strong>Time</strong></td>\n            <td>{{ $('Build Booking Success').item.json.requestedTime }}</td>\n          </tr>\n\n        </table>\n      </td>\n    </tr>\n\n    <tr>\n      <td style=\"padding-top:20px; color:#666;\">\n        If you need to reschedule or cancel your appointment, please contact us.\n      </td>\n    </tr>\n\n  </table>\n\n</div>",
-        "options": {}
-      },
-      "id": "8674d790-d335-406d-9076-e4dbcb5afed7",
-      "name": "Send Booking Confirmation Email1",
-      "type": "n8n-nodes-base.emailSend",
-      "typeVersion": 2.1,
-      "position": [
-        1328,
-        592
-      ],
-      "webhookId": "4a0e84bc-b6d0-47d3-b636-d69defdd7ec6",
-      "credentials": {
-        "smtp": {
-          "id": "OAJiqdPNORIduM3f",
-          "name": "SMTP account"
-        }
-      },
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "jsCode": "const staticData = getWorkflowStaticData('global');\nconst key = String($json.idempotencyKey || '').trim();\nstaticData.processedKeys = staticData.processedKeys || {};\nconst now = Date.now();\nconst ttlMs = 10 * 60 * 1000;\nfor (const [storedKey, timestamp] of Object.entries(staticData.processedKeys)) {\n  if (now - Number(timestamp || 0) > ttlMs) delete staticData.processedKeys[storedKey];\n}\nconst isDuplicate = Boolean(key && staticData.processedKeys[key]);\nif (!isDuplicate && key) staticData.processedKeys[key] = now;\nreturn [{ json: { ...$json, isDuplicate, route: isDuplicate ? 'duplicate_ignored' : ($json.route || 'continue_ai'), success: true, message: isDuplicate ? 'Duplicate webhook ignored.' : ($json.message || 'Continue processing') } }];"
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst key = String($json.idempotencyKey || '').trim();\nstaticData.processedKeys = staticData.processedKeys || {};\nconst now = Date.now();\nconst ttlMs = 10 * 60 * 1000;\nfor (const [storedKey, timestamp] of Object.entries(staticData.processedKeys)) {\n  if (now - Number(timestamp || 0) > ttlMs) delete staticData.processedKeys[storedKey];\n}\nconst isDuplicate = Boolean(key && staticData.processedKeys[key]);\nif (!isDuplicate && key) staticData.processedKeys[key] = now;\nreturn [{ json: { ...$json, isDuplicate, route: isDuplicate ? 'duplicate_ignored' : ($json.route || 'continue_ai'), success: true, message: isDuplicate ? 'Duplicate webhook ignored.' : ($json.message || 'Continue processing') } }];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -864,53 +635,6 @@
       ],
       "id": "07f902f8-9634-4b72-8925-2110380eac8d",
       "name": "Code in JavaScript"
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict",
-            "version": 3
-          },
-          "conditions": [
-            {
-              "id": "49c1f9fa-463a-4335-8f32-3a545ff5c97c",
-              "leftValue": "={{ (() => { const body = $json.body || $json; const ev = String(body.event_type || body.event || body.eventType || $json.event_type || $json.event || $json.eventType || '').toLowerCase(); return ['call_ended','call_analyzed','call_analysis_ready','conversation_ended'].includes(ev); })() }}",
-              "rightValue": "",
-              "operator": {
-                "type": "boolean",
-                "operation": "true",
-                "singleValue": true
-              }
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      },
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.3,
-      "position": [
-        -2528,
-        272
-      ],
-      "id": "49e11a93-731d-4f84-a424-f78857f5edcb",
-      "name": "If"
-    },
-    {
-      "parameters": {
-        "jsCode": "const input = $input.first().json || {};\nconst body = input.body || input;\nconst call = body.call || {};\nconst eventType = String(body.event_type || body.event || body.eventType || 'unknown');\nreturn [{ json: { success: true, route: 'ignored_non_terminal_event', eventType, callId: body.callId || body.call_id || call.call_id || '', message: 'Ignored non-terminal Retell webhook event.' } }];"
-      },
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        -2288,
-        432
-      ],
-      "id": "72e8a9ef-44f6-4518-a528-d77f2fe6f588",
-      "name": "Build Ignored Event Response"
     },
     {
       "parameters": {
@@ -945,36 +669,6 @@
       ],
       "id": "12f5944d-f3a0-489e-a7f7-d3cb9267e74d",
       "name": "IF Duplicate Execution?"
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{$vars.QC_BACKEND_BASE_URL + '/api/automation/events'}}",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ { source: 'n8n', eventType: 'call.completed', idempotencyKey: 'call_completed_' + $json.idempotencyKey, tenantEmail: $json.tenantEmail, occurredAt: new Date().toISOString(), payload: { callId: $json.callId, dialedNumber: $json.dialedNumber, callerPhone: $json.callerNumber, callerName: $json.customerName, callerEmail: $json.customerEmail, status: 'Completed', transcript: $json.transcript || '' } } }}",
-        "options": {}
-      },
-      "id": "4b91f745-8f57-4ca4-a6a1-d0b2f4047f39",
-      "name": "Log Call Transcript Event",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        -1616,
-        336
-      ],
-      "retryOnFail": true,
-      "maxTries": 2,
-      "waitBetweenTries": 1200,
-      "continueOnFail": true,
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "QC_AUTOMATION_KEY_CRED",
-          "name": "QC Automation Key"
-        }
-      }
     }
   ],
   "connections": {
@@ -982,7 +676,7 @@
       "main": [
         [
           {
-            "node": "If",
+            "node": "Normalize Inbound Request",
             "type": "main",
             "index": 0
           }
@@ -1022,17 +716,6 @@
         ],
         [
           {
-            "node": "Route To Owner/Fallback",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Route To Owner/Fallback": {
-      "main": [
-        [
-          {
             "node": "Build Fallback Payload",
             "type": "main",
             "index": 0
@@ -1041,17 +724,6 @@
       ]
     },
     "Build Fallback Payload": {
-      "main": [
-        [
-          {
-            "node": "Finalize Fallback Call",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Finalize Fallback Call": {
       "main": [
         [
           {
@@ -1135,7 +807,12 @@
       "main": [
         [
           {
-            "node": "Send Booking Confirmation SMS",
+            "node": "Finalize Successful Call",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Respond Success",
             "type": "main",
             "index": 0
           }
@@ -1258,7 +935,7 @@
             "index": 0
           },
           {
-            "node": "Send Booking Confirmation SMS1",
+            "node": "Respond Success",
             "type": "main",
             "index": 0
           }
@@ -1285,51 +962,7 @@
       "main": [
         [
           {
-            "node": "IF Usage >= 70%?",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send Booking Confirmation SMS": {
-      "main": [
-        [
-          {
-            "node": "Send Booking Confirmation Email",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send Booking Confirmation Email": {
-      "main": [
-        [
-          {
-            "node": "Finalize Successful Call",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send Booking Confirmation SMS1": {
-      "main": [
-        [
-          {
-            "node": "Send Booking Confirmation Email1",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send Booking Confirmation Email1": {
-      "main": [
-        [
-          {
-            "node": "Respond Success",
+            "node": "IF Call Accepted?",
             "type": "main",
             "index": 0
           }
@@ -1347,35 +980,6 @@
         ]
       ]
     },
-    "If": {
-      "main": [
-        [
-          {
-            "node": "Normalize Inbound Request",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Build Ignored Event Response",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Build Ignored Event Response": {
-      "main": [
-        [
-          {
-            "node": "Respond Success",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "IF Duplicate Execution?": {
       "main": [
         [
@@ -1387,36 +991,7 @@
         ],
         [
           {
-            "node": "Log Call Transcript Event",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Log Call Transcript Event": {
-      "main": [
-        [
-          {
             "node": "Run Call Preflight",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "IF Usage >= 70%?": {
-      "main": [
-        [
-          {
-            "node": "Trigger Usage Alert Workflow",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "IF Call Accepted?",
             "type": "main",
             "index": 0
           }

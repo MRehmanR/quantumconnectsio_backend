@@ -11,15 +11,6 @@ Create credentials in n8n; never place their values in workflow JSON, Postman fi
 
 This credential protects inbound n8n webhooks and authenticates every backend automation request. After import, confirm it is selected on all webhook nodes and all HTTP nodes whose URL begins with `QC_BACKEND_BASE_URL`.
 
-## RetellAI
-
-- Type: `HTTP Header Auth`
-- Display name: `RetellAI`
-- Header name: `Authorization`
-- Header value: `Bearer <RETELL_API_KEY>`
-
-Only workflow 11's optional owner-transfer fallback references this credential. Production Retell routing and function calls go directly to the signature-verifying backend.
-
 ## Messaging providers
 
 The notification workflows contain provider nodes that must be linked to tenant-appropriate Twilio/email credentials before activation. A shared provider account may be used only when the sender identity and compliance policy support every tenant. Otherwise duplicate the worker by provider account or resolve provider configuration through a controlled backend dispatch service.

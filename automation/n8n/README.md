@@ -38,7 +38,6 @@ Create the credentials in [CREDENTIALS.md](CREDENTIALS.md), configure the variab
 
 - `QC_BACKEND_BASE_URL`: backend origin, without a trailing slash
 - `N8N_BASE_URL`: n8n origin, without a trailing slash (workflow 11 only)
-- `RETELL_API_BASE_URL`: normally `https://api.retellai.com/v2` (workflow 11 fallback only)
 - `QC_DEFAULT_PHONE_COUNTRY_CODE`: optional notification formatting default
 - `QC_GOOGLE_REVIEW_URL`: optional default review URL
 - `QC_WAITLIST_BATCH_SIZE`: optional; defaults to 3

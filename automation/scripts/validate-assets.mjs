@@ -32,6 +32,8 @@ const expectedWorkflowFiles = [
 ];
 
 const findNode = (workflow, name) => (workflow.nodes || []).find((node) => node.name === name);
+const connectionTargets = (workflow, name, branch = 0) =>
+    (workflow.connections?.[name]?.main?.[branch] || []).map((target) => target.node);
 
 for (const expected of expectedWorkflowFiles) {
     if (!fs.existsSync(path.join(workflowDirectory, expected))) {
@@ -111,6 +113,33 @@ for (const file of jsonFiles) {
             for (const field of ['requestedSlot', 'newSlot', 'appointmentId', 'query']) {
                 if (!normalizeCode.includes(field)) {
                     failures.push(`${relativeFile}: inbound normalizer must preserve ${field}`);
+                }
+            }
+            const deduplicationCode = String(findNode(parsed, 'Code in JavaScript')?.parameters?.jsCode || '');
+            if (!deduplicationCode.includes("$getWorkflowStaticData('global')")) {
+                failures.push(`${relativeFile}: deduplication must use the n8n Code node $getWorkflowStaticData API`);
+            }
+            const forbiddenNodeTypes = new Set(['n8n-nodes-base.twilio', 'n8n-nodes-base.emailSend']);
+            const unsafeNodes = (parsed.nodes || []).filter((node) =>
+                forbiddenNodeTypes.has(node.type) || ['Route To Owner/Fallback', 'Trigger Usage Alert Workflow'].includes(node.name)
+            );
+            if (unsafeNodes.length > 0) {
+                failures.push(`${relativeFile}: regression workflow cannot call messaging or live-call providers (${unsafeNodes.map((node) => node.name).join(', ')})`);
+            }
+            const requiredConnections = [
+                ['Webhook Inbound Call', 0, 'Normalize Inbound Request'],
+                ['IF Duplicate Execution?', 1, 'Run Call Preflight'],
+                ['Evaluate Preflight Result', 0, 'IF Call Accepted?'],
+                ['IF Call Accepted?', 1, 'Build Fallback Payload'],
+                ['Build Fallback Payload', 0, 'Respond Fallback'],
+                ['Build Booking Success', 0, 'Respond Success'],
+                ['Build Reschedule Success', 0, 'Respond Success'],
+                ['Build Cancel Success', 0, 'Respond Success'],
+                ['Build Query Success', 0, 'Respond Success']
+            ];
+            for (const [source, branch, target] of requiredConnections) {
+                if (!connectionTargets(parsed, source, branch).includes(target)) {
+                    failures.push(`${relativeFile}: ${source} branch ${branch} must reach ${target}`);
                 }
             }
         }
