@@ -1543,6 +1543,72 @@ const deleteKnowledgeBaseEntry = async (id, { actor } = {}) => {
     return deleted > 0;
 };
 
+const normalizeAutomationPhone = (value, referenceE164 = '') => {
+    const raw = String(value || '').trim();
+    if (/^\+[1-9]\d{7,14}$/.test(raw)) {
+        return raw;
+    }
+
+    const normalized = normalizePhone(raw, { referenceE164 });
+    return normalized.ok ? normalized.e164 : '';
+};
+
+const findUpcomingAppointmentsForTenant = async ({ tenant, customerPhone }) => {
+    if (!tenant?.id) {
+        return [];
+    }
+
+    const phone = normalizeAutomationPhone(customerPhone, tenant.inboundNumber);
+    if (!phone) {
+        return [];
+    }
+
+    const contacts = await AppointmentContact.findAll({ where: { phone } });
+    const appointmentIds = contacts.map((contact) => contact.appointmentId);
+    if (appointmentIds.length === 0) {
+        return [];
+    }
+
+    return Appointment.findAll({
+        where: {
+            id: { [Op.in]: appointmentIds },
+            userId: tenant.id,
+            status: { [Op.in]: ['Pending', 'Confirmed'] },
+            appointmentDate: { [Op.gte]: new Date().toISOString().slice(0, 10) }
+        },
+        order: [['appointmentDate', 'ASC'], ['appointmentTime', 'ASC']]
+    });
+};
+
+const queryKnowledgeForTenant = async ({ tenant, query }) => {
+    if (!tenant?.id) {
+        return null;
+    }
+
+    const tokens = String(query || '')
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((token) => token.length > 2);
+    const entries = await KnowledgeBaseEntry.findAll({
+        where: { userId: tenant.id }
+    });
+    const ranked = entries
+        .map((entry) => {
+            const searchable = `${entry.title} ${entry.content}`.toLowerCase();
+            const score = tokens.reduce(
+                (total, token) => total + (searchable.includes(token) ? 1 : 0),
+                0
+            );
+            return { entry, score };
+        })
+        .sort((left, right) => right.score - left.score);
+    const match = ranked.find((item) => item.score > 0)?.entry || null;
+
+    return match
+        ? { answer: match.content, sourceTitle: match.title }
+        : null;
+};
+
 const createDemoBooking = async ({
     customerName,
     customerPhone,
@@ -2861,6 +2927,8 @@ module.exports = {
     getProfile,
     updateProfile,
     getKnowledgeBaseEntries,
+    findUpcomingAppointmentsForTenant,
+    queryKnowledgeForTenant,
     createKnowledgeBaseEntry,
     deleteKnowledgeBaseEntry,
     createDemoBooking,

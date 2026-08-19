@@ -185,11 +185,314 @@ const persistCallEvent = async (normalizedEvent) => {
     });
 };
 
+const normalizeInboundNumber = (value) => {
+    const raw = String(value || '').trim();
+    if (/^\+[1-9]\d{7,14}$/.test(raw)) {
+        return raw;
+    }
+
+    const { normalizePhone } = require('../utils/phone');
+    const normalized = normalizePhone(raw, {});
+    return normalized.ok ? normalized.e164 : '';
+};
+
+const resolveTenantByInboundNumber = async (toNumber) => {
+    const { User } = require('../models');
+    const inboundNumber = normalizeInboundNumber(toNumber);
+    if (!inboundNumber) {
+        return null;
+    }
+
+    return User.findOne({ where: { inboundNumber } });
+};
+
+const rejectInboundCall = () => ({ call_inbound: { reject: true } });
+
+const handleInboundCall = async (normalizedInbound, { preflightKey } = {}) => {
+    const tenant = await resolveTenantByInboundNumber(normalizedInbound?.toNumber);
+    if (
+        !tenant ||
+        tenant.status !== 'Active' ||
+        !String(tenant.retellAgentId || '').trim() ||
+        tenant.receptionistStatus === 'paused'
+    ) {
+        return rejectInboundCall();
+    }
+
+    const { preflightInboundCall, finalizeInboundCall } = require('./automation.service');
+    const result = await preflightInboundCall({
+        tenantEmail: tenant.email,
+        dialedNumber: tenant.inboundNumber,
+        callerNumber: normalizedInbound.fromNumber,
+        idempotencyKey: preflightKey
+    });
+
+    if (!result.accepted) {
+        if (result.userId) {
+            await finalizeInboundCall({
+                tenantEmail: tenant.email,
+                dialedNumber: tenant.inboundNumber,
+                wasConnected: false
+            });
+        }
+        return rejectInboundCall();
+    }
+
+    return {
+        call_inbound: {
+            override_agent_id: String(tenant.retellAgentId),
+            dynamic_variables: {
+                tenant_id: String(tenant.id),
+                business_name: String(tenant.businessName || ''),
+                caller_number: String(normalizedInbound.fromNumber || ''),
+                owner_number: String(tenant.ownerPhone || ''),
+                business_timezone: String(tenant.timezone || 'UTC'),
+                receptionist_name: String(tenant.receptionistName || 'Aria'),
+                custom_greeting: String(tenant.receptionistCustomGreeting || '')
+            },
+            metadata: {
+                tenantId: String(tenant.id),
+                inboundNumber: String(tenant.inboundNumber),
+                preflightKey: String(preflightKey || '')
+            }
+        }
+    };
+};
+
+const stableJson = (value) => {
+    if (Array.isArray(value)) {
+        return `[${value.map(stableJson).join(',')}]`;
+    }
+    if (value && typeof value === 'object') {
+        return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+    }
+    return JSON.stringify(value);
+};
+
+const toolResult = ({ ok, code, message, data = {} }) => ({
+    ok,
+    code,
+    message,
+    data
+});
+
+const executeRetellToolOperation = async ({ name, tenant, args, fromNumber }) => {
+    const dashboardDataService = require('./dashboard-data.service');
+    const tenantContext = {
+        tenantEmail: tenant.email,
+        dialedNumber: tenant.inboundNumber,
+        ownerPhone: tenant.ownerPhone || ''
+    };
+
+    if (name === 'get_business_information') {
+        const match = await dashboardDataService.queryKnowledgeForTenant({
+            tenant,
+            query: args.query
+        });
+        return match
+            ? toolResult({
+                ok: true,
+                code: 'INFORMATION_FOUND',
+                message: match.answer,
+                data: { sourceTitle: match.sourceTitle }
+            })
+            : toolResult({
+                ok: false,
+                code: 'INFORMATION_NOT_FOUND',
+                message: 'I could not find that information for this business.'
+            });
+    }
+
+    if (name === 'find_upcoming_appointments') {
+        const appointments = await dashboardDataService.findUpcomingAppointmentsForTenant({
+            tenant,
+            customerPhone: fromNumber
+        });
+        return toolResult({
+            ok: true,
+            code: 'UPCOMING_APPOINTMENTS_FOUND',
+            message: appointments.length > 0
+                ? `Found ${appointments.length} upcoming appointment${appointments.length === 1 ? '' : 's'}.`
+                : 'No upcoming appointments were found for this caller.',
+            data: {
+                appointments: appointments.map((appointment) => ({
+                    id: String(appointment.id),
+                    date: appointment.appointmentDate,
+                    time: appointment.appointmentTime,
+                    type: appointment.type,
+                    status: appointment.status
+                }))
+            }
+        });
+    }
+
+    if (name === 'check_appointment_availability') {
+        const availability = await dashboardDataService.getAppointmentAvailability({
+            date: args.date,
+            ...tenantContext
+        });
+        return toolResult({
+            ok: true,
+            code: 'AVAILABILITY_FOUND',
+            message: availability.fullyBooked
+                ? 'There are no available times on that date.'
+                : `There are ${availability.availableSlots.length} available times on that date.`,
+            data: availability
+        });
+    }
+
+    if (name === 'book_appointment') {
+        const appointment = await dashboardDataService.createAppointment({
+            customerName: args.customer_name,
+            customerPhone: args.customer_phone || fromNumber,
+            customerEmail: args.customer_email || '',
+            date: args.date,
+            time: args.time,
+            type: args.service_type || 'Consultation',
+            status: 'Confirmed',
+            ...tenantContext
+        });
+        return toolResult({
+            ok: true,
+            code: appointment.duplicate ? 'APPOINTMENT_ALREADY_BOOKED' : 'APPOINTMENT_BOOKED',
+            message: appointment.duplicate
+                ? 'That appointment was already booked for this caller.'
+                : 'The appointment has been booked.',
+            data: { appointment }
+        });
+    }
+
+    if (name === 'reschedule_appointment') {
+        const appointment = await dashboardDataService.rescheduleAppointment({
+            appointmentId: args.appointment_id,
+            date: args.new_date,
+            time: args.new_time,
+            ...tenantContext
+        });
+        return appointment
+            ? toolResult({
+                ok: true,
+                code: 'APPOINTMENT_RESCHEDULED',
+                message: 'The appointment has been rescheduled.',
+                data: { appointment }
+            })
+            : toolResult({
+                ok: false,
+                code: 'APPOINTMENT_NOT_FOUND',
+                message: 'That appointment was not found for this business.'
+            });
+    }
+
+    if (name === 'cancel_appointment') {
+        const appointment = await dashboardDataService.cancelAppointment({
+            appointmentId: args.appointment_id,
+            reason: args.reason || '',
+            ...tenantContext
+        });
+        return appointment
+            ? toolResult({
+                ok: true,
+                code: 'APPOINTMENT_CANCELLED',
+                message: 'The appointment has been cancelled.',
+                data: { appointment }
+            })
+            : toolResult({
+                ok: false,
+                code: 'APPOINTMENT_NOT_FOUND',
+                message: 'That appointment was not found for this business.'
+            });
+    }
+
+    return toolResult({
+        ok: false,
+        code: 'UNKNOWN_TOOL',
+        message: 'This call action is not supported.'
+    });
+};
+
+const executeRetellTool = async (normalizedFunction) => {
+    const { AutomationEvent } = require('../models');
+    const name = String(normalizedFunction?.name || '').trim();
+    const args = normalizedFunction?.args || {};
+    const tenant = await resolveTenantByInboundNumber(normalizedFunction?.toNumber);
+
+    if (!tenant) {
+        return toolResult({
+            ok: false,
+            code: 'TENANT_NOT_FOUND',
+            message: 'The called business could not be identified.'
+        });
+    }
+
+    const metadataTenantId = String(normalizedFunction?.metadata?.tenantId || '').trim();
+    if (metadataTenantId && metadataTenantId !== String(tenant.id)) {
+        return toolResult({
+            ok: false,
+            code: 'TENANT_MISMATCH',
+            message: 'The call context does not match the called business.'
+        });
+    }
+
+    const argsHash = crypto.createHash('sha256').update(stableJson(args)).digest('hex');
+    const idempotencyKey = `retell_tool:${String(normalizedFunction?.callId || 'unknown')}:${name}:${argsHash}`;
+    const existing = await AutomationEvent.findOne({ where: { idempotencyKey } });
+    if (existing?.payload?.result) {
+        return existing.payload.result;
+    }
+
+    let result;
+    try {
+        result = await executeRetellToolOperation({
+            name,
+            tenant,
+            args,
+            fromNumber: normalizedFunction?.fromNumber
+        });
+    } catch (error) {
+        result = toolResult({
+            ok: false,
+            code: String(error?.code || 'TOOL_EXECUTION_FAILED'),
+            message: String(error?.message || 'The call action could not be completed.'),
+            data: error?.alternatives ? { alternatives: error.alternatives } : {}
+        });
+    }
+
+    try {
+        await AutomationEvent.create({
+            source: 'retell',
+            eventType: `tool.${name || 'unknown'}`,
+            idempotencyKey,
+            tenantEmail: tenant.email,
+            occurredAt: new Date(),
+            payload: {
+                callId: String(normalizedFunction?.callId || ''),
+                result
+            },
+            status: result.ok ? 'processed' : 'failed',
+            processedAt: new Date(),
+            errorMessage: result.ok ? '' : result.message
+        });
+    } catch (error) {
+        const duplicate = String(error?.name || '').includes('Unique') || /unique/i.test(String(error?.message || ''));
+        if (!duplicate) {
+            throw error;
+        }
+        const winner = await AutomationEvent.findOne({ where: { idempotencyKey } });
+        if (winner?.payload?.result) {
+            return winner.payload.result;
+        }
+    }
+
+    return result;
+};
+
 module.exports = {
     parseRetellSignature,
     verifyRetellRequest,
     normalizeInboundRequest,
     normalizeFunctionRequest,
     normalizeCallEvent,
-    persistCallEvent
+    persistCallEvent,
+    handleInboundCall,
+    executeRetellTool
 };
