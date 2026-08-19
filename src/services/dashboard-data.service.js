@@ -2042,9 +2042,9 @@ const getAppointmentAvailability = async ({ date, tenantEmail, dialedNumber, own
         throw invalidDateError;
     }
 
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    if (targetDateOnly < todayStart) {
+    const tenantTodayParts = getYmdPartsInTimeZone(new Date(), tenantUser?.timezone || 'UTC');
+    const tenantToday = `${tenantTodayParts.year}-${String(tenantTodayParts.month).padStart(2, '0')}-${String(tenantTodayParts.day).padStart(2, '0')}`;
+    if (targetDate < tenantToday) {
         const pastDateError = new Error('Appointment date must be today or later.');
         pastDateError.code = 'PAST_DATE_NOT_ALLOWED';
         throw pastDateError;

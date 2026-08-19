@@ -213,8 +213,34 @@ const preflightCall = async ({ tenantEmail, dialedNumber, idempotencyKey }) => {
     });
 };
 
-const finalizeCall = async ({ tenantEmail, dialedNumber, wasConnected }) => {
+const finalizeCall = async ({ tenantEmail, dialedNumber, wasConnected, idempotencyKey }) => {
     return sequelize.transaction(async (transaction) => {
+        const finalizationEventKey = String(idempotencyKey || '').trim()
+            ? `call_usage_finalized_${String(idempotencyKey).trim()}`
+            : '';
+        let finalizationClaim = null;
+        if (finalizationEventKey) {
+            const [event, created] = await AutomationEvent.findOrCreate({
+                where: { idempotencyKey: finalizationEventKey },
+                defaults: {
+                    source: 'system',
+                    eventType: 'call.usage.finalized',
+                    tenantEmail: tenantEmail || '',
+                    occurredAt: new Date(),
+                    payload: { dialedNumber: dialedNumber || '' },
+                    status: 'received'
+                },
+                transaction
+            });
+            if (!created && event.payload?.result) {
+                return { ...event.payload.result, duplicated: true };
+            }
+            if (!created) {
+                return { success: false, reason: 'finalization_in_progress', duplicated: true };
+            }
+            finalizationClaim = event;
+        }
+
         let user = null;
 
         if (dialedNumber) {
@@ -224,19 +250,32 @@ const finalizeCall = async ({ tenantEmail, dialedNumber, wasConnected }) => {
             user = await User.findOne({ where: { email: tenantEmail }, transaction });
         }
         if (!user) {
-            return { success: false, reason: 'tenant_not_found' };
+            const result = { success: false, reason: 'tenant_not_found' };
+            if (finalizationClaim) {
+                await finalizationClaim.update({ payload: { dialedNumber: dialedNumber || '', result }, status: 'processed', processedAt: new Date() }, { transaction });
+            }
+            return result;
         }
 
         const cycle = await ensureUsageCycleRow(user, transaction);
         cycle.concurrentCallsActive = Math.max(Number(cycle.concurrentCallsActive || 0) - 1, 0);
         await cycle.save({ transaction });
 
-        return {
+        const result = {
             success: true,
             reason: 'ok',
             concurrentActive: Number(cycle.concurrentCallsActive || 0),
             connected: Boolean(wasConnected)
         };
+        if (finalizationClaim) {
+            await finalizationClaim.update({
+                tenantEmail: user.email,
+                payload: { dialedNumber: dialedNumber || '', result },
+                status: 'processed',
+                processedAt: new Date()
+            }, { transaction });
+        }
+        return result;
     });
 };
 

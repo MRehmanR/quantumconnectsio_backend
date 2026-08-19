@@ -555,6 +555,7 @@ const processRetellCallEvent = async (normalizedEvent) => {
 
     const { AutomationEvent } = require('../models');
     const idempotencyKey = `retell:call_ended:${normalizedEvent.callId}`;
+    const claimToken = crypto.randomUUID();
     const [event, created] = await AutomationEvent.findOrCreate({
         where: { idempotencyKey },
         defaults: {
@@ -562,7 +563,7 @@ const processRetellCallEvent = async (normalizedEvent) => {
             eventType: 'call.ended.finalized',
             tenantEmail: '',
             occurredAt: normalizedEvent.endedAt || new Date(),
-            payload: { callId: normalizedEvent.callId },
+            payload: { callId: normalizedEvent.callId, claimToken },
             status: 'received'
         }
     });
@@ -585,6 +586,11 @@ const processRetellCallEvent = async (normalizedEvent) => {
             }
             current.status = 'received';
             current.errorMessage = '';
+            current.payload = {
+                ...(current.payload || {}),
+                callId: normalizedEvent.callId,
+                claimToken
+            };
             current.updatedAt = new Date();
             await current.save({ transaction });
             return true;
@@ -600,17 +606,33 @@ const processRetellCallEvent = async (normalizedEvent) => {
 
     const tenant = await resolveTenantByInboundNumber(normalizedEvent.toNumber);
     const { finalizeInboundCall } = require('./automation.service');
+    const settleClaim = async (updates) => {
+        const { sequelize } = require('../config/db');
+        return sequelize.transaction(async (transaction) => {
+            const current = await AutomationEvent.findByPk(event.id, {
+                transaction,
+                lock: transaction.LOCK.UPDATE
+            });
+            if (current?.payload?.claimToken !== claimToken) {
+                return false;
+            }
+            await current.update(updates, { transaction });
+            return true;
+        });
+    };
     try {
         const finalization = await finalizeInboundCall({
             tenantEmail: tenant.email,
             dialedNumber: tenant.inboundNumber,
-            wasConnected: Number(normalizedEvent.durationSeconds || 0) > 0
+            wasConnected: Number(normalizedEvent.durationSeconds || 0) > 0,
+            idempotencyKey: normalizedEvent.callId
         });
 
-        await event.update({
+        await settleClaim({
             tenantEmail: tenant.email,
             payload: {
                 callId: normalizedEvent.callId,
+                claimToken,
                 result: finalization
             },
             status: 'processed',
@@ -620,8 +642,12 @@ const processRetellCallEvent = async (normalizedEvent) => {
 
         return { ...persisted, duplicated: false, finalization };
     } catch (error) {
-        await event.update({
+        await settleClaim({
             tenantEmail: tenant.email,
+            payload: {
+                callId: normalizedEvent.callId,
+                claimToken
+            },
             status: 'failed',
             processedAt: null,
             errorMessage: String(error?.message || 'Call finalization failed').slice(0, 240)

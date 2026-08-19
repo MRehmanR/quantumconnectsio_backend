@@ -634,8 +634,8 @@ const listDailySummaryTenants = async () => {
             timezone: user.timezone || 'UTC'
         }));
 };
-const finalizeInboundCall = async ({ tenantEmail, dialedNumber, wasConnected }) => {
-    return usageEnforcementService.finalizeCall({ tenantEmail, dialedNumber, wasConnected });
+const finalizeInboundCall = async ({ tenantEmail, dialedNumber, wasConnected, idempotencyKey }) => {
+    return usageEnforcementService.finalizeCall({ tenantEmail, dialedNumber, wasConnected, idempotencyKey });
 };
 
 const triggerWaitlistBatch = async ({ tenantEmail, batchSize = 3 }) => {

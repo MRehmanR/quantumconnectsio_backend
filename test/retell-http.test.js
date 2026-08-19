@@ -201,6 +201,31 @@ test('a failed call finalization remains retryable and releases concurrency on r
     }
 });
 
+test('usage release is idempotent by Retell call id even when invoked more than once', async () => {
+    const cycle = await UsageCycle.findOne({ where: { userId: tenant.id } });
+    cycle.concurrentCallsActive = 2;
+    await cycle.save();
+
+    const first = await usageEnforcementService.finalizeCall({
+        tenantEmail: tenant.email,
+        dialedNumber: tenant.inboundNumber,
+        wasConnected: true,
+        idempotencyKey: 'call_usage_release_once'
+    });
+    const duplicate = await usageEnforcementService.finalizeCall({
+        tenantEmail: tenant.email,
+        dialedNumber: tenant.inboundNumber,
+        wasConnected: true,
+        idempotencyKey: 'call_usage_release_once'
+    });
+
+    assert.equal(first.concurrentActive, 1);
+    assert.equal(duplicate.concurrentActive, 1);
+    assert.equal(duplicate.duplicated, true);
+    cycle.concurrentCallsActive = 0;
+    await cycle.save();
+});
+
 test('signed custom-function endpoint executes against the called tenant', async () => {
     const response = await signedPost('/api/automation/retell/functions', {
         name: 'check_appointment_availability',
