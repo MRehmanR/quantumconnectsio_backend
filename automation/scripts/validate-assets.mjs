@@ -119,6 +119,10 @@ for (const file of jsonFiles) {
             if (!deduplicationCode.includes("$getWorkflowStaticData('global')")) {
                 failures.push(`${relativeFile}: deduplication must use the n8n Code node $getWorkflowStaticData API`);
             }
+            const successResponse = String(findNode(parsed, 'Respond Success')?.parameters?.responseBody || '');
+            if (!successResponse.includes('answer:')) {
+                failures.push(`${relativeFile}: successful knowledge responses must return the tenant answer`);
+            }
             const forbiddenNodeTypes = new Set(['n8n-nodes-base.twilio', 'n8n-nodes-base.emailSend']);
             const unsafeNodes = (parsed.nodes || []).filter((node) =>
                 forbiddenNodeTypes.has(node.type) || ['Route To Owner/Fallback', 'Trigger Usage Alert Workflow'].includes(node.name)
@@ -152,6 +156,10 @@ for (const file of jsonFiles) {
             const normalizeCode = String(findNode(parsed, 'Normalize Usage Alert Input')?.parameters?.jsCode || '');
             if (!normalizeCode.includes('job.tenant') || !normalizeCode.includes('job.payload')) {
                 failures.push(`${relativeFile}: usage workflow must read the canonical tenant job envelope`);
+            }
+            const responseBody = String(findNode(parsed, 'Respond Usage Alert Result')?.parameters?.responseBody || '');
+            if (!responseBody.includes('>= 70') || responseBody.includes('>= 80')) {
+                failures.push(`${relativeFile}: usage response routing must use the 70% threshold`);
             }
         }
 

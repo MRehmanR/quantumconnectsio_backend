@@ -1,5 +1,5 @@
 const { sequelize } = require('../config/db');
-const { UsageCycle, User } = require('../models');
+const { UsageCycle, User, AutomationEvent } = require('../models');
 
 const PLAN_LIMITS = {
     Free: { includedCalls: 0, concurrentCalls: 0 },
@@ -36,7 +36,11 @@ const ensureUsageCycleRow = async (user, transaction) => {
     const now = new Date();
     const { cycleStart, cycleEnd } = getMonthlyAnniversaryWindow(user, now);
 
-    const existing = await UsageCycle.findOne({ where: { userId: user.id }, transaction });
+    const existing = await UsageCycle.findOne({
+        where: { userId: user.id },
+        transaction,
+        lock: transaction.LOCK.UPDATE
+    });
     if (!existing) {
         return UsageCycle.create(
             {
@@ -68,30 +72,81 @@ const ensureUsageCycleRow = async (user, transaction) => {
 
 const preflightCall = async ({ tenantEmail, dialedNumber, idempotencyKey }) => {
     return sequelize.transaction(async (transaction) => {
+        const eventKey = String(idempotencyKey || '').trim()
+            ? `call_preflight_${String(idempotencyKey).trim()}`
+            : '';
+        let claim = null;
+        if (eventKey) {
+            const [event, created] = await AutomationEvent.findOrCreate({
+                where: { idempotencyKey: eventKey },
+                defaults: {
+                    source: 'system',
+                    eventType: 'call.preflight',
+                    tenantEmail: tenantEmail || '',
+                    occurredAt: new Date(),
+                    payload: { dialedNumber: dialedNumber || '' },
+                    status: 'received'
+                },
+                transaction
+            });
+            if (!created) {
+                if (event.payload?.result) {
+                    return { ...event.payload.result, duplicated: true };
+                }
+                return {
+                    accepted: false,
+                    action: 'retry',
+                    reason: 'preflight_in_progress',
+                    duplicated: true
+                };
+            }
+            claim = event;
+        }
+
+        const completeClaim = async (result, resolvedTenantEmail = tenantEmail || '') => {
+            if (claim) {
+                await claim.update({
+                    tenantEmail: resolvedTenantEmail,
+                    payload: { dialedNumber: dialedNumber || '', result },
+                    status: 'processed',
+                    processedAt: new Date()
+                }, { transaction });
+            }
+            return result;
+        };
+
         let user = null;
 
         if (dialedNumber) {
-            user = await User.findOne({ where: { inboundNumber: dialedNumber }, transaction });
+            user = await User.findOne({
+                where: { inboundNumber: dialedNumber },
+                transaction,
+                lock: transaction.LOCK.UPDATE
+            });
         }
         if (!user && tenantEmail) {
-            user = await User.findOne({ where: { email: tenantEmail }, transaction });
+            user = await User.findOne({
+                where: { email: tenantEmail },
+                transaction,
+                lock: transaction.LOCK.UPDATE
+            });
         }
 
         if (!user) {
-            return {
+            return completeClaim({
                 accepted: false,
                 action: 'reject',
                 reason: 'tenant_not_found'
-            };
+            });
         }
 
         if (user.status !== 'Active') {
-            return {
+            return completeClaim({
                 accepted: false,
                 action: 'route_or_reject',
                 reason: 'tenant_inactive',
                 ownerPhone: user.ownerPhone || ''
-            };
+            }, user.email);
         }
 
         const limits = getPlanLimits(user.plan);
@@ -99,14 +154,14 @@ const preflightCall = async ({ tenantEmail, dialedNumber, idempotencyKey }) => {
 
         const currentConcurrent = Number(cycle.concurrentCallsActive || 0);
         if (currentConcurrent >= limits.concurrentCalls) {
-            return {
+            return completeClaim({
                 accepted: false,
                 action: 'queue',
                 reason: 'concurrent_limit_exceeded',
                 queueTargetSeconds: 10,
                 currentConcurrent,
                 concurrentLimit: limits.concurrentCalls
-            };
+            }, user.email);
         }
 
         const nextIncludedUsed = Number(cycle.includedCallsUsed || 0) + 1;
@@ -136,7 +191,7 @@ const preflightCall = async ({ tenantEmail, dialedNumber, idempotencyKey }) => {
         const threshold70Reached = totalUsedAfter >= Math.ceil(includedLimit * 0.7);
         const threshold100Reached = totalUsedAfter >= includedLimit;
 
-        return {
+        return completeClaim({
             accepted: !overLimit,
             action: overLimit ? 'route_owner' : 'allow_ai',
             reason: overLimit ? 'usage_limit_exceeded' : 'ok',
@@ -154,7 +209,7 @@ const preflightCall = async ({ tenantEmail, dialedNumber, idempotencyKey }) => {
                 concurrentActive: Number(cycle.concurrentCallsActive || 0),
                 concurrentLimit: limits.concurrentCalls
             }
-        };
+        }, user.email);
     });
 };
 

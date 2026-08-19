@@ -206,6 +206,28 @@ const resolveTenantForRouting = async ({ tenantEmail, dialedNumber, transaction 
     return user;
 };
 
+const resolveAutomationTenant = async ({ tenantEmail, dialedNumber, transaction }) => {
+    const normalizedEmail = String(tenantEmail || '').trim().toLowerCase();
+    const normalizedNumber = String(dialedNumber || '').trim();
+
+    if (!normalizedEmail && !normalizedNumber) {
+        return null;
+    }
+
+    if (normalizedNumber) {
+        const tenant = await User.findOne({ where: { inboundNumber: normalizedNumber }, transaction });
+        if (!tenant) {
+            return null;
+        }
+        if (normalizedEmail && String(tenant.email || '').trim().toLowerCase() !== normalizedEmail) {
+            return null;
+        }
+        return tenant;
+    }
+
+    return User.findOne({ where: { email: tenantEmail }, transaction });
+};
+
 const processCallCompleted = async ({ tenantEmail, payload, transaction }) => {
     const durationSeconds = parseDurationSeconds(payload);
     const callStatus = payload.escalated ? 'Escalated' : payload.status || 'Completed';
@@ -388,6 +410,9 @@ const maybeEmitThresholdEvents = async ({ userId, tenantEmail, usage }) => {
         return;
     }
     const tenant = await User.findByPk(userId);
+    const usagePercent = Number(usage?.includedLimit || 0) > 0
+        ? Math.round((Number(usage?.used || 0) / Number(usage.includedLimit)) * 100)
+        : 0;
     const dispatchThreshold = async (threshold) => {
         if (!tenant?.inboundNumber) {
             return;
@@ -397,7 +422,7 @@ const maybeEmitThresholdEvents = async ({ userId, tenantEmail, usage }) => {
             jobType: `usage.threshold.${threshold}`,
             jobId: `usage:${threshold}:${userId}:${cycleDate}`,
             tenant,
-            payload: { usage, threshold }
+            payload: { usage, usagePercent, threshold }
         });
         await dispatchN8nJob(job);
     };
@@ -576,19 +601,6 @@ const getAutomationOverview = async () => {
 };
 
 const preflightInboundCall = async ({ tenantEmail, dialedNumber, callerNumber, idempotencyKey }) => {
-    const normalizedKey = String(idempotencyKey || '').trim();
-    const eventKey = normalizedKey ? `call_preflight_${normalizedKey}` : '';
-
-    if (eventKey) {
-        const existing = await AutomationEvent.findOne({ where: { idempotencyKey: eventKey } });
-        if (existing?.payload?.result) {
-            return {
-                ...existing.payload.result,
-                duplicated: true
-            };
-        }
-    }
-
     const result = await usageEnforcementService.preflightCall({
         tenantEmail,
         dialedNumber,
@@ -598,30 +610,6 @@ const preflightInboundCall = async ({ tenantEmail, dialedNumber, callerNumber, i
 
     if (result.accepted && result.userId && result.usage) {
         await maybeEmitThresholdEvents({ userId: result.userId, tenantEmail, usage: result.usage });
-    }
-
-    if (eventKey) {
-        try {
-            await AutomationEvent.create({
-                source: 'system',
-                eventType: 'call.preflight',
-                idempotencyKey: eventKey,
-                tenantEmail: tenantEmail || '',
-                occurredAt: new Date(),
-                payload: {
-                    dialedNumber: dialedNumber || '',
-                    callerNumber: callerNumber || '',
-                    result
-                },
-                status: 'processed',
-                processedAt: new Date()
-            });
-        } catch (error) {
-            const duplicate = String(error?.name || '').includes('Unique') || String(error?.message || '').includes('unique');
-            if (!duplicate) {
-                throw error;
-            }
-        }
     }
 
     return result;
@@ -921,6 +909,7 @@ module.exports = {
     runGdprDelete,
     verifyRetellSignature,
     verifyAutomationKey,
+    resolveAutomationTenant,
     identifyInboundClient,
     getUsageSnapshot
 };

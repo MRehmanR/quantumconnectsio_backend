@@ -49,6 +49,19 @@ const normalizeInboundRequest = (body = {}) => {
     };
 };
 
+const buildInboundRetryKey = ({ signature, fromNumber, toNumber }) => {
+    const parsed = parseRetellSignature(signature);
+    if (!parsed) {
+        return '';
+    }
+
+    const fingerprint = crypto
+        .createHash('sha256')
+        .update(`${parsed.timestamp}:${String(fromNumber || '').trim()}:${String(toNumber || '').trim()}`)
+        .digest('hex');
+    return `retell_inbound_${fingerprint}`;
+};
+
 const normalizeFunctionRequest = (body = {}) => {
     const call = body.call || {};
 
@@ -66,6 +79,7 @@ const normalizeFunctionRequest = (body = {}) => {
 const normalizeCallEvent = (body = {}) => {
     const call = body.call || {};
     const analysis = call.call_analysis || {};
+    const customAnalysis = analysis.custom_analysis_data || {};
     const start = Number(call.start_timestamp || 0);
     const end = Number(call.end_timestamp || 0);
 
@@ -84,6 +98,8 @@ const normalizeCallEvent = (body = {}) => {
         summary: String(analysis.call_summary || ''),
         successful: Boolean(analysis.call_successful),
         disconnectionReason: String(call.disconnection_reason || ''),
+        extractedCallerName: String(customAnalysis.caller_name || customAnalysis.customer_name || ''),
+        extractedCallerEmail: String(customAnalysis.caller_email || customAnalysis.customer_email || ''),
         metadata: call.metadata || {},
         rawCall: call
     };
@@ -152,7 +168,13 @@ const persistCallEvent = async (normalizedEvent) => {
                 durationSeconds: Number(normalizedEvent.durationSeconds || 0),
                 sentiment,
                 status: 'Completed',
-                transcript: String(normalizedEvent.transcript || '')
+                transcript: String(normalizedEvent.transcript || ''),
+                summary: String(normalizedEvent.summary || ''),
+                callSuccessful: normalizedEvent.event === 'call_analyzed'
+                    ? Boolean(normalizedEvent.successful)
+                    : null,
+                disconnectionReason: String(normalizedEvent.disconnectionReason || ''),
+                endedAt: normalizedEvent.endedAt || null
             }, { transaction });
             created = true;
         } else {
@@ -162,6 +184,10 @@ const persistCallEvent = async (normalizedEvent) => {
                 updates.durationSeconds = Number(normalizedEvent.durationSeconds);
             }
             if (normalizedEvent.transcript) updates.transcript = normalizedEvent.transcript;
+            if (normalizedEvent.summary) updates.summary = normalizedEvent.summary;
+            if (normalizedEvent.event === 'call_analyzed') updates.callSuccessful = Boolean(normalizedEvent.successful);
+            if (normalizedEvent.disconnectionReason) updates.disconnectionReason = normalizedEvent.disconnectionReason;
+            if (normalizedEvent.endedAt) updates.endedAt = normalizedEvent.endedAt;
             if (normalizedEvent.sentiment) updates.sentiment = sentiment;
             if (Object.keys(updates).length > 0) {
                 await callLog.update(updates, { transaction });
@@ -171,15 +197,21 @@ const persistCallEvent = async (normalizedEvent) => {
         const [contact, contactCreated] = await CallContact.findOrCreate({
             where: { callLogId: callLog.id },
             defaults: {
-                name: 'Unknown Caller',
+                name: normalizedEvent.extractedCallerName || 'Unknown Caller',
                 phone: callerNumber,
-                email: ''
+                email: normalizedEvent.extractedCallerEmail || ''
             },
             transaction
         });
 
-        if (!contactCreated && callerNumber && contact.phone !== callerNumber) {
-            await contact.update({ phone: callerNumber }, { transaction });
+        if (!contactCreated) {
+            const contactUpdates = {};
+            if (callerNumber && contact.phone !== callerNumber) contactUpdates.phone = callerNumber;
+            if (normalizedEvent.extractedCallerName) contactUpdates.name = normalizedEvent.extractedCallerName;
+            if (normalizedEvent.extractedCallerEmail) contactUpdates.email = normalizedEvent.extractedCallerEmail;
+            if (Object.keys(contactUpdates).length > 0) {
+                await contact.update(contactUpdates, { transaction });
+            }
         }
 
         return {
@@ -215,11 +247,12 @@ const rejectInboundCall = () => ({ call_inbound: { reject: true } });
 
 const handleInboundCall = async (normalizedInbound, { preflightKey } = {}) => {
     const tenant = await resolveTenantByInboundNumber(normalizedInbound?.toNumber);
+    const dashboardDataService = require('./dashboard-data.service');
     if (
         !tenant ||
         tenant.status !== 'Active' ||
         !String(tenant.retellAgentId || '').trim() ||
-        tenant.receptionistStatus === 'paused'
+        !dashboardDataService.isReceptionistActiveForUser(tenant)
     ) {
         return rejectInboundCall();
     }
@@ -336,13 +369,29 @@ const executeRetellToolOperation = async ({ name, tenant, args, fromNumber }) =>
             date: args.date,
             ...tenantContext
         });
+        const requestedTime = String(args.requested_time || '').trim();
+        const requestedAvailable = requestedTime
+            ? availability.availableSlots.includes(requestedTime)
+            : null;
+        const responseData = {
+            ...availability,
+            requestedTime,
+            requestedAvailable,
+            alternativeSlots: requestedAvailable === false
+                ? availability.availableSlots.slice(0, 5)
+                : []
+        };
         return toolResult({
             ok: true,
             code: 'AVAILABILITY_FOUND',
-            message: availability.fullyBooked
+            message: requestedAvailable === true
+                ? `${requestedTime} is available on that date.`
+                : requestedAvailable === false
+                    ? `${requestedTime} is not available on that date.`
+                    : availability.fullyBooked
                 ? 'There are no available times on that date.'
                 : `There are ${availability.availableSlots.length} available times on that date.`,
-            data: availability
+            data: responseData
         });
     }
 
@@ -372,6 +421,7 @@ const executeRetellToolOperation = async ({ name, tenant, args, fromNumber }) =>
             appointmentId: args.appointment_id,
             date: args.new_date,
             time: args.new_time,
+            customerPhone: fromNumber,
             ...tenantContext
         });
         return appointment
@@ -392,6 +442,7 @@ const executeRetellToolOperation = async ({ name, tenant, args, fromNumber }) =>
         const appointment = await dashboardDataService.cancelAppointment({
             appointmentId: args.appointment_id,
             reason: args.reason || '',
+            customerPhone: fromNumber,
             ...tenantContext
         });
         return appointment
@@ -517,35 +568,73 @@ const processRetellCallEvent = async (normalizedEvent) => {
     });
 
     if (!created) {
-        return { ...persisted, duplicated: true };
+        const { sequelize } = require('../config/db');
+        const claimed = await sequelize.transaction(async (transaction) => {
+            const current = await AutomationEvent.findByPk(event.id, {
+                transaction,
+                lock: transaction.LOCK.UPDATE
+            });
+            if (current.status === 'processed') {
+                return false;
+            }
+            if (current.status === 'received') {
+                const claimAgeMs = Date.now() - new Date(current.updatedAt || current.createdAt).getTime();
+                if (claimAgeMs < 30_000) {
+                    return false;
+                }
+            }
+            current.status = 'received';
+            current.errorMessage = '';
+            current.updatedAt = new Date();
+            await current.save({ transaction });
+            return true;
+        });
+        if (!claimed) {
+            return {
+                ...persisted,
+                duplicated: true,
+                finalizationPending: event.status !== 'processed'
+            };
+        }
     }
 
     const tenant = await resolveTenantByInboundNumber(normalizedEvent.toNumber);
     const { finalizeInboundCall } = require('./automation.service');
-    const finalization = await finalizeInboundCall({
-        tenantEmail: tenant.email,
-        dialedNumber: tenant.inboundNumber,
-        wasConnected: Number(normalizedEvent.durationSeconds || 0) > 0
-    });
+    try {
+        const finalization = await finalizeInboundCall({
+            tenantEmail: tenant.email,
+            dialedNumber: tenant.inboundNumber,
+            wasConnected: Number(normalizedEvent.durationSeconds || 0) > 0
+        });
 
-    await event.update({
-        tenantEmail: tenant.email,
-        payload: {
-            callId: normalizedEvent.callId,
-            result: finalization
-        },
-        status: 'processed',
-        processedAt: new Date(),
-        errorMessage: ''
-    });
+        await event.update({
+            tenantEmail: tenant.email,
+            payload: {
+                callId: normalizedEvent.callId,
+                result: finalization
+            },
+            status: 'processed',
+            processedAt: new Date(),
+            errorMessage: ''
+        });
 
-    return { ...persisted, duplicated: false, finalization };
+        return { ...persisted, duplicated: false, finalization };
+    } catch (error) {
+        await event.update({
+            tenantEmail: tenant.email,
+            status: 'failed',
+            processedAt: null,
+            errorMessage: String(error?.message || 'Call finalization failed').slice(0, 240)
+        });
+        throw error;
+    }
 };
 
 module.exports = {
     parseRetellSignature,
     verifyRetellRequest,
     normalizeInboundRequest,
+    buildInboundRetryKey,
     normalizeFunctionRequest,
     normalizeCallEvent,
     persistCallEvent,

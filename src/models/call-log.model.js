@@ -52,6 +52,26 @@ const CallLog = sequelize.define(
             type: DataTypes.TEXT,
             allowNull: false,
             defaultValue: ''
+        },
+        summary: {
+            type: DataTypes.TEXT,
+            allowNull: false,
+            defaultValue: ''
+        },
+        callSuccessful: {
+            type: DataTypes.BOOLEAN,
+            allowNull: true,
+            defaultValue: null
+        },
+        disconnectionReason: {
+            type: DataTypes.STRING,
+            allowNull: false,
+            defaultValue: ''
+        },
+        endedAt: {
+            type: DataTypes.DATE,
+            allowNull: true,
+            defaultValue: null
         }
     },
     {

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { Op } = require('sequelize');
 
 const testDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'qc-retell-tools-'));
 process.env.DB_DIALECT = 'sqlite';
@@ -21,10 +22,12 @@ const {
     handleInboundCall,
     executeRetellTool
 } = require('../src/services/retell-integration.service');
+const dashboardDataService = require('../src/services/dashboard-data.service');
 
 let tenantA;
 let tenantB;
 let tenantBAppointment;
+let anotherCallerAppointment;
 
 const caller = '+447700900001';
 const dateAfter = (days) => {
@@ -97,6 +100,22 @@ test.before(async () => {
         phone: caller,
         email: 'customer-b@example.test'
     });
+
+    anotherCallerAppointment = await Appointment.create({
+        userId: tenantA.id,
+        inboundNumber: tenantA.inboundNumber,
+        caller: 'Another Tenant A Customer',
+        appointmentDate: dateAfter(11),
+        appointmentTime: '09:30',
+        type: 'Consultation',
+        status: 'Confirmed'
+    });
+    await AppointmentContact.create({
+        appointmentId: anotherCallerAppointment.id,
+        name: 'Another Tenant A Customer',
+        phone: '+447700900099',
+        email: 'another-a@example.test'
+    });
 });
 
 test.after(async () => {
@@ -126,6 +145,61 @@ test('unknown inbound number is rejected without a default tenant fallback', asy
     assert.deepEqual(result, { call_inbound: { reject: true } });
 });
 
+test('scheduled receptionist hours are evaluated in the tenant timezone', () => {
+    const scheduledTenant = {
+        receptionistStatus: 'scheduled',
+        receptionistScheduleMode: 'custom',
+        timezone: 'America/New_York',
+        receptionistWeeklySchedule: JSON.stringify([
+            { day: 'monday', enabled: true, start: '09:00', end: '17:00' }
+        ])
+    };
+
+    assert.equal(
+        dashboardDataService.isReceptionistActiveForUser(scheduledTenant, new Date('2026-08-17T13:30:00.000Z')),
+        true
+    );
+    assert.equal(
+        dashboardDataService.isReceptionistActiveForUser(scheduledTenant, new Date('2026-08-17T22:00:00.000Z')),
+        false
+    );
+});
+
+test('appointment availability follows the requested weekday schedule and booking interval', async () => {
+    const targetDate = dateAfter(30);
+    const weekday = new Intl.DateTimeFormat('en-US', {
+        weekday: 'long',
+        timeZone: 'UTC'
+    }).format(new Date(`${targetDate}T12:00:00.000Z`)).toLowerCase();
+    tenantA.receptionistWeeklySchedule = JSON.stringify([
+        { day: weekday, enabled: false, start: '10:00', end: '12:00' }
+    ]);
+    tenantA.receptionistBookingRules = JSON.stringify({ duration: '45 minutes', buffer: '15 minutes' });
+    await tenantA.save();
+
+    const unavailable = await dashboardDataService.getAppointmentAvailability({
+        date: targetDate,
+        tenantEmail: tenantA.email,
+        dialedNumber: tenantA.inboundNumber
+    });
+    assert.equal(unavailable.fullyBooked, true);
+    assert.deepEqual(unavailable.availableSlots, []);
+
+    tenantA.receptionistWeeklySchedule = JSON.stringify([
+        { day: weekday, enabled: true, start: '10:00', end: '12:00' }
+    ]);
+    await tenantA.save();
+    const available = await dashboardDataService.getAppointmentAvailability({
+        date: targetDate,
+        tenantEmail: tenantA.email,
+        dialedNumber: tenantA.inboundNumber
+    });
+    assert.deepEqual(available.availableSlots, ['10:00', '11:00']);
+    tenantA.receptionistWeeklySchedule = '[]';
+    tenantA.receptionistBookingRules = '{}';
+    await tenantA.save();
+});
+
 test('business information search cannot return another tenant knowledge', async () => {
     const result = await executeRetellTool(functionRequest(
         'get_business_information',
@@ -151,7 +225,114 @@ test('a cross-tenant appointment id cannot be cancelled', async () => {
     assert.equal(tenantBAppointment.status, 'Confirmed');
 });
 
+test('a caller cannot reschedule or cancel another caller appointment in the same tenant', async () => {
+    const reschedule = await executeRetellTool(functionRequest(
+        'reschedule_appointment',
+        tenantA,
+        {
+            appointment_id: String(anotherCallerAppointment.id),
+            new_date: dateAfter(16),
+            new_time: '13:00'
+        },
+        'call_ownership_reschedule'
+    ));
+    const cancel = await executeRetellTool(functionRequest(
+        'cancel_appointment',
+        tenantA,
+        { appointment_id: String(anotherCallerAppointment.id), reason: 'Not my booking' },
+        'call_ownership_cancel'
+    ));
+
+    assert.equal(reschedule.ok, false);
+    assert.equal(reschedule.code, 'APPOINTMENT_NOT_FOUND');
+    assert.equal(cancel.ok, false);
+    assert.equal(cancel.code, 'APPOINTMENT_NOT_FOUND');
+    await anotherCallerAppointment.reload();
+    assert.equal(anotherCallerAppointment.appointmentTime, '09:30');
+    assert.equal(anotherCallerAppointment.status, 'Confirmed');
+});
+
+test('rescheduling cannot overwrite an occupied tenant slot', async () => {
+    const source = await Appointment.create({
+        userId: tenantA.id,
+        inboundNumber: tenantA.inboundNumber,
+        caller: 'Test Caller',
+        appointmentDate: dateAfter(20),
+        appointmentTime: '10:00',
+        type: 'Consultation',
+        status: 'Confirmed'
+    });
+    await AppointmentContact.create({
+        appointmentId: source.id,
+        name: 'Test Caller',
+        phone: caller,
+        email: 'caller@example.test'
+    });
+    await Appointment.create({
+        userId: tenantA.id,
+        inboundNumber: tenantA.inboundNumber,
+        caller: 'Slot Owner',
+        appointmentDate: dateAfter(21),
+        appointmentTime: '15:00',
+        type: 'Consultation',
+        status: 'Confirmed'
+    });
+
+    const result = await executeRetellTool(functionRequest(
+        'reschedule_appointment',
+        tenantA,
+        {
+            appointment_id: String(source.id),
+            new_date: dateAfter(21),
+            new_time: '15:00'
+        },
+        'call_reschedule_conflict'
+    ));
+
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'SLOT_UNAVAILABLE');
+    await source.reload();
+    assert.equal(source.appointmentTime, '10:00');
+});
+
+test('concurrent booking attempts cannot create two active appointments for one tenant slot', async () => {
+    const targetDate = dateAfter(35);
+    const attempts = await Promise.allSettled([
+        dashboardDataService.createAppointment({
+            customerName: 'Concurrent Caller One',
+            customerPhone: '+447700900061',
+            date: targetDate,
+            time: '16:00',
+            type: 'Consultation',
+            status: 'Confirmed',
+            tenantEmail: tenantA.email,
+            dialedNumber: tenantA.inboundNumber
+        }),
+        dashboardDataService.createAppointment({
+            customerName: 'Concurrent Caller Two',
+            customerPhone: '+447700900062',
+            date: targetDate,
+            time: '16:00',
+            type: 'Consultation',
+            status: 'Confirmed',
+            tenantEmail: tenantA.email,
+            dialedNumber: tenantA.inboundNumber
+        })
+    ]);
+
+    assert.equal(attempts.filter((attempt) => attempt.status === 'fulfilled').length, 1);
+    assert.equal(await Appointment.count({
+        where: {
+            userId: tenantA.id,
+            appointmentDate: targetDate,
+            appointmentTime: '16:00',
+            status: { [Op.in]: ['Pending', 'Confirmed'] }
+        }
+    }), 1);
+});
+
 test('booking retries are idempotent and upcoming lookup stays tenant-scoped', async () => {
+    const countBeforeBooking = await Appointment.count({ where: { userId: tenantA.id } });
     const request = functionRequest('book_appointment', tenantA, {
         customer_name: 'Test Caller',
         customer_phone: caller,
@@ -172,16 +353,15 @@ test('booking retries are idempotent and upcoming lookup stays tenant-scoped', a
 
     assert.equal(first.ok, true);
     assert.equal(retry.data.appointment.id, first.data.appointment.id);
-    assert.equal(await Appointment.count({ where: { userId: tenantA.id } }), 1);
-    assert.equal(upcoming.data.appointments.length, 1);
-    assert.equal(upcoming.data.appointments[0].id, first.data.appointment.id);
+    assert.equal(await Appointment.count({ where: { userId: tenantA.id } }), countBeforeBooking + 1);
+    assert.ok(upcoming.data.appointments.some((appointment) => appointment.id === first.data.appointment.id));
 });
 
 test('availability, reschedule, and cancel tools reuse tenant appointment rules', async () => {
     const availability = await executeRetellTool(functionRequest(
         'check_appointment_availability',
         tenantA,
-        { date: dateAfter(13) },
+        { date: dateAfter(13), requested_time: '10:30' },
         'call_availability'
     ));
     const booking = await executeRetellTool(functionRequest('book_appointment', tenantA, {
@@ -203,6 +383,7 @@ test('availability, reschedule, and cancel tools reuse tenant appointment rules'
 
     assert.equal(availability.ok, true);
     assert.ok(availability.data.availableSlots.length > 0);
+    assert.equal(availability.data.requestedAvailable, true);
     assert.equal(rescheduled.data.appointment.time, '12:00');
     assert.equal(cancelled.data.appointment.status, 'Cancelled');
 });

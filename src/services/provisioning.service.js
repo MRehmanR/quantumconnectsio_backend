@@ -1,4 +1,5 @@
 const https = require('https');
+const crypto = require('node:crypto');
 const { URL } = require('url');
 const { Op } = require('sequelize');
 const { User, KnowledgeBaseEntry } = require('../models');
@@ -122,6 +123,19 @@ const MANAGED_RETELL_TOOL_NAMES = [
     'cancel_appointment'
 ];
 
+const stableJson = (value) => {
+    if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+    if (value && typeof value === 'object') {
+        return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+    }
+    return JSON.stringify(value);
+};
+
+const promptHash = (prompt) => crypto
+    .createHash('sha256')
+    .update(String(prompt || ''))
+    .digest('hex');
+
 const normalizePublicApiBaseUrl = (value) => {
     const normalized = String(value || '').trim().replace(/\/+$/, '');
     if (!normalized) {
@@ -186,7 +200,8 @@ const buildRetellToolDefinitions = (publicApiBaseUrl = PUBLIC_API_BASE_URL) => {
             name: 'check_appointment_availability',
             description: 'Get currently available appointment times for a date at this business.',
             properties: {
-                date: stringProperty('Appointment date in YYYY-MM-DD format.')
+                date: stringProperty('Appointment date in YYYY-MM-DD format.'),
+                requested_time: stringProperty('Optional requested appointment time in 24-hour HH:mm format.')
             },
             required: ['date']
         }),
@@ -240,11 +255,18 @@ const syncRetellIntegrationForUser = async (user, options = {}) => {
     const authorization = { Authorization: `Bearer ${RETELL_API_KEY}` };
     const agentId = String(user.retellAgentId).trim();
     const phoneNumber = String(user.inboundNumber).trim();
-    const agent = await request({
-        method: 'GET',
-        url: `${retellBaseUrl}/get-agent/${encodeURIComponent(agentId)}`,
-        headers: authorization
-    });
+    const [phone, agent] = await Promise.all([
+        request({
+            method: 'GET',
+            url: `${retellBaseUrl}/get-phone-number/${encodeURIComponent(phoneNumber)}`,
+            headers: authorization
+        }),
+        request({
+            method: 'GET',
+            url: `${retellBaseUrl}/get-agent/${encodeURIComponent(agentId)}`,
+            headers: authorization
+        })
+    ]);
     const responseEngine = agent?.response_engine || {};
     if (responseEngine.type !== 'retell-llm' || !responseEngine.llm_id) {
         throw new Error('Retell integration tools currently require a retell-llm response engine.');
@@ -263,12 +285,15 @@ const syncRetellIntegrationForUser = async (user, options = {}) => {
         ...preservedTools,
         ...buildRetellToolDefinitions(publicBaseUrl)
     ];
-    const changes = [
-        'phone.inbound_webhook_url',
-        'agent.webhook_url',
-        'agent.webhook_events',
-        'llm.general_tools'
-    ];
+    const desiredInboundWebhookUrl = `${publicBaseUrl}/api/automation/retell/inbound`;
+    const desiredAgentWebhookUrl = `${publicBaseUrl}/api/automation/retell/events`;
+    const desiredWebhookEvents = ['call_started', 'call_ended', 'call_analyzed'];
+    const changes = [];
+    if (String(phone?.inbound_webhook_url || '') !== desiredInboundWebhookUrl) changes.push('phone.inbound_webhook_url');
+    if (String(agent?.webhook_url || '') !== desiredAgentWebhookUrl) changes.push('agent.webhook_url');
+    if (stableJson(agent?.webhook_events || []) !== stableJson(desiredWebhookEvents)) changes.push('agent.webhook_events');
+    if (stableJson(existingTools) !== stableJson(mergedTools)) changes.push('llm.general_tools');
+    const originalPromptHash = promptHash(llm?.general_prompt);
 
     if (dryRun) {
         return {
@@ -276,39 +301,55 @@ const syncRetellIntegrationForUser = async (user, options = {}) => {
             applied: false,
             dryRun: true,
             promptPreserved: true,
+            promptHash: originalPromptHash,
             changes
         };
     }
 
-    await request({
-        method: 'PATCH',
-        url: `${retellBaseUrl}/update-phone-number/${encodeURIComponent(phoneNumber)}`,
-        headers: authorization,
-        body: {
-            inbound_webhook_url: `${publicBaseUrl}/api/automation/retell/inbound`
-        }
+    if (changes.includes('phone.inbound_webhook_url')) {
+        await request({
+            method: 'PATCH',
+            url: `${retellBaseUrl}/update-phone-number/${encodeURIComponent(phoneNumber)}`,
+            headers: authorization,
+            body: { inbound_webhook_url: desiredInboundWebhookUrl }
+        });
+    }
+    if (changes.includes('agent.webhook_url') || changes.includes('agent.webhook_events')) {
+        await request({
+            method: 'PATCH',
+            url: `${retellBaseUrl}/update-agent/${encodeURIComponent(agentId)}`,
+            headers: authorization,
+            body: {
+                webhook_url: desiredAgentWebhookUrl,
+                webhook_events: desiredWebhookEvents
+            }
+        });
+    }
+    if (changes.includes('llm.general_tools')) {
+        await request({
+            method: 'PATCH',
+            url: `${retellBaseUrl}/update-retell-llm/${encodeURIComponent(llmId)}`,
+            headers: authorization,
+            body: { general_tools: mergedTools }
+        });
+    }
+
+    const verifiedLlm = await request({
+        method: 'GET',
+        url: `${retellBaseUrl}/get-retell-llm/${encodeURIComponent(llmId)}`,
+        headers: authorization
     });
-    await request({
-        method: 'PATCH',
-        url: `${retellBaseUrl}/update-agent/${encodeURIComponent(agentId)}`,
-        headers: authorization,
-        body: {
-            webhook_url: `${publicBaseUrl}/api/automation/retell/events`,
-            webhook_events: ['call_started', 'call_ended', 'call_analyzed']
-        }
-    });
-    await request({
-        method: 'PATCH',
-        url: `${retellBaseUrl}/update-retell-llm/${encodeURIComponent(llmId)}`,
-        headers: authorization,
-        body: { general_tools: mergedTools }
-    });
+    const verifiedPromptHash = promptHash(verifiedLlm?.general_prompt);
+    if (verifiedPromptHash !== originalPromptHash) {
+        throw new Error('Retell prompt verification failed after integration synchronization.');
+    }
 
     return {
         userId: String(user.id),
         applied: true,
         dryRun: false,
         promptPreserved: true,
+        promptHash: verifiedPromptHash,
         changes
     };
 };

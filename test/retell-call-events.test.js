@@ -32,7 +32,8 @@ const eventFor = (event, tenant, overrides = {}) => ({
         call_analysis: {
             user_sentiment: overrides.sentiment || 'Positive',
             call_summary: overrides.summary || '',
-            call_successful: true
+            call_successful: true,
+            custom_analysis_data: overrides.customAnalysis || {}
         }
     }
 });
@@ -64,7 +65,11 @@ test('call_analyzed enriches the existing call instead of creating a duplicate',
     await persistCallEvent(normalizeCallEvent(eventFor('call_ended', tenantA)));
     await persistCallEvent(normalizeCallEvent(eventFor('call_analyzed', tenantA, {
         transcript: 'Final transcript',
-        summary: 'The request was completed.'
+        summary: 'The request was completed.',
+        customAnalysis: {
+            caller_name: 'Extracted Caller',
+            caller_email: 'caller@example.test'
+        }
     })));
 
     assert.equal(await CallLog.count({ where: { retellCallId: 'call_a' } }), 1);
@@ -72,7 +77,14 @@ test('call_analyzed enriches the existing call instead of creating a duplicate',
     assert.equal(row.userId, tenantA.id);
     assert.equal(row.transcript, 'Final transcript');
     assert.equal(row.durationSeconds, 60);
+    assert.equal(row.summary, 'The request was completed.');
+    assert.equal(row.callSuccessful, true);
+    assert.equal(row.disconnectionReason, 'user_hangup');
+    assert.equal(new Date(row.endedAt).toISOString(), new Date(1_800_000_060_000).toISOString());
     assert.equal(await CallContact.count({ where: { callLogId: row.id } }), 1);
+    const contact = await CallContact.findOne({ where: { callLogId: row.id } });
+    assert.equal(contact.name, 'Extracted Caller');
+    assert.equal(contact.email, 'caller@example.test');
 });
 
 test('a Retell call id cannot be reassigned to another tenant', async () => {

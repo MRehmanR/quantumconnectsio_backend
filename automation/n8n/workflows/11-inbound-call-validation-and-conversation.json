@@ -598,7 +598,7 @@
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ { success: true, route: $json.route || 'continue_ai', intent: $json.intent, callId: $json.callId, usagePercent: $json.usagePercent, booking: $json.booking || null, executionId: $execution.id } }}",
+        "responseBody": "={{ { success: true, route: $json.route || 'continue_ai', intent: $json.intent, callId: $json.callId, usagePercent: $json.usagePercent, booking: $json.booking || null, answer: $json.answer || '', executionId: $execution.id } }}",
         "options": {}
       },
       "id": "9cfc09d9-ae9f-4391-bd6d-27f41e027bae",

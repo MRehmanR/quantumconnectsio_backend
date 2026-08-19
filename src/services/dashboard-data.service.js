@@ -19,6 +19,7 @@ const {
     KbQueryLog,
     DailySummary,
 } = require('../models');
+const { sequelize } = require('../config/db');
 const { defaultFeatureToggles } = require('../constants/feature-toggles');
 const {
     N8N_MANUAL_APPOINTMENT_WEBHOOK_URL,
@@ -542,7 +543,7 @@ const getNextLocalDateYmd = (timezone) => {
     return nextUtc.toISOString().slice(0, 10);
 };
 
-const getBookedSlotSetForDate = async (date, userId) => {
+const getBookedSlotSetForDate = async (date, userId, transaction) => {
     const where = {
         appointmentDate: date,
         status: {
@@ -554,7 +555,7 @@ const getBookedSlotSetForDate = async (date, userId) => {
         where.userId = userId;
     }
 
-    const appointments = await Appointment.findAll({ where });
+    const appointments = await Appointment.findAll({ where, transaction });
 
     return new Set(
         appointments
@@ -578,6 +579,20 @@ const generateDailySlots = ({ startHour = 9, endHour = 18, intervalMinutes = 30 
 const suggestAlternativeSlots = ({ requestedMinutes, availableMinutes, maxSuggestions = 5 }) => {
     const sorted = [...availableMinutes].sort((a, b) => Math.abs(a - requestedMinutes) - Math.abs(b - requestedMinutes));
     return sorted.slice(0, maxSuggestions).map((minutes) => formatMinutesToHHmm(minutes));
+};
+
+const buildSlotUnavailableError = async ({ date, requestedMinutes, userId, transaction }) => {
+    const bookedSlotSet = await getBookedSlotSetForDate(date, userId, transaction);
+    const allSlots = generateDailySlots({});
+    const availableSlots = allSlots.filter((slot) => !bookedSlotSet.has(slot));
+    const error = new Error('Requested time slot is not available');
+    error.code = 'SLOT_UNAVAILABLE';
+    error.alternatives = suggestAlternativeSlots({
+        requestedMinutes,
+        availableMinutes: availableSlots,
+        maxSuggestions: 5
+    });
+    return error;
 };
 
 const resolveUserByEmail = async (email, actor) => {
@@ -856,6 +871,27 @@ const normalizeWeeklySchedule = (inputSchedule) => {
 
 const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
+const parseRuleMinutes = (value, fallback) => {
+    const match = String(value || '').match(/(\d+)/);
+    if (!match) return fallback;
+    const amount = Number(match[1]);
+    return /hour/i.test(String(value)) ? amount * 60 : amount;
+};
+
+const getTenantLocalComparableNow = (timezone, nowDate = new Date()) => {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: String(timezone || 'UTC'),
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23'
+    }).formatToParts(nowDate);
+    const valueFor = (type) => Number(parts.find((part) => part.type === type)?.value || 0);
+    return Date.UTC(valueFor('year'), valueFor('month') - 1, valueFor('day'), valueFor('hour'), valueFor('minute'));
+};
+
 const isReceptionistActiveForUser = (user, nowDate = new Date()) => {
     const status = String(user?.receptionistStatus || 'paused');
     if (status === 'paused') {
@@ -871,8 +907,23 @@ const isReceptionistActiveForUser = (user, nowDate = new Date()) => {
     }
 
     const schedule = normalizeWeeklySchedule(safeJsonParse(user?.receptionistWeeklySchedule, getDefaultWeeklySchedule()));
-    const currentDay = dayNames[nowDate.getDay()];
-    const currentMinutes = nowDate.getHours() * 60 + nowDate.getMinutes();
+    let currentDay;
+    let currentMinutes;
+    try {
+        const parts = new Intl.DateTimeFormat('en-US', {
+            timeZone: String(user?.timezone || 'UTC'),
+            weekday: 'long',
+            hour: '2-digit',
+            minute: '2-digit',
+            hourCycle: 'h23'
+        }).formatToParts(nowDate);
+        const valueFor = (type) => parts.find((part) => part.type === type)?.value || '';
+        currentDay = valueFor('weekday').toLowerCase();
+        currentMinutes = Number(valueFor('hour')) * 60 + Number(valueFor('minute'));
+    } catch {
+        currentDay = dayNames[nowDate.getUTCDay()];
+        currentMinutes = nowDate.getUTCHours() * 60 + nowDate.getUTCMinutes();
+    }
     const row = schedule.find((item) => item.day === currentDay);
 
     if (!row || !row.enabled) {
@@ -1118,7 +1169,11 @@ const getDashboardOverview = async ({ actor, range = 'weekly', startDate = '', e
         duration: formatDuration(call.durationSeconds),
         sentiment: call.sentiment,
         status: call.status,
-        transcript: call.transcript
+        transcript: call.transcript,
+        summary: call.summary || '',
+        callSuccessful: call.callSuccessful,
+        disconnectionReason: call.disconnectionReason || '',
+        endedAt: call.endedAt || null
     }));
 
     const serializedAppointments = appointments.map((appointment) => ({
@@ -1220,7 +1275,11 @@ const getCalls = async ({ search, filter, actor }) => {
         duration: formatDuration(call.durationSeconds),
         sentiment: call.sentiment,
         status: call.status,
-        transcript: call.transcript
+        transcript: call.transcript,
+        summary: call.summary || '',
+        callSuccessful: call.callSuccessful,
+        disconnectionReason: call.disconnectionReason || '',
+        endedAt: call.endedAt || null
     }));
 };
 
@@ -1856,21 +1915,49 @@ const createAppointment = async ({ customerName, customerPhone, customerEmail, d
         throw slotUnavailableError;
     }
 
-    const appointment = await Appointment.create({
-        caller: customerName,
-        appointmentDate: date,
-        appointmentTime: formattedTime,
-        type: type || 'Consultation',
-        status: requestedStatus,
-        userId: tenantUser?.id || null,
-        inboundNumber: tenantUser?.inboundNumber || dialedNumber || ''
-    });
+    const appointment = await sequelize.transaction(async (transaction) => {
+        if (tenantUser?.id) {
+            await User.findByPk(tenantUser.id, {
+                transaction,
+                lock: transaction.LOCK.UPDATE
+            });
+            const occupiedSlot = await Appointment.findOne({
+                where: {
+                    userId: tenantUser.id,
+                    appointmentDate: date,
+                    appointmentTime: formattedTime,
+                    status: { [Op.in]: ['Pending', 'Confirmed'] }
+                },
+                transaction,
+                lock: transaction.LOCK.UPDATE
+            });
+            if (occupiedSlot) {
+                throw await buildSlotUnavailableError({
+                    date,
+                    requestedMinutes,
+                    userId: tenantUser.id,
+                    transaction
+                });
+            }
+        }
 
-    await AppointmentContact.create({
-        appointmentId: appointment.id,
-        name: customerName,
-        phone: normalizedCustomerPhone.e164 || customerPhoneRaw || '',
-        email: customerEmail || ''
+        const created = await Appointment.create({
+            caller: customerName,
+            appointmentDate: date,
+            appointmentTime: formattedTime,
+            type: type || 'Consultation',
+            status: requestedStatus,
+            userId: tenantUser?.id || null,
+            inboundNumber: tenantUser?.inboundNumber || dialedNumber || ''
+        }, { transaction });
+
+        await AppointmentContact.create({
+            appointmentId: created.id,
+            name: customerName,
+            phone: normalizedCustomerPhone.e164 || customerPhoneRaw || '',
+            email: customerEmail || ''
+        }, { transaction });
+        return created;
     });
 
     const notificationResult = await triggerManualAppointmentNotification({
@@ -1963,20 +2050,64 @@ const getAppointmentAvailability = async ({ date, tenantEmail, dialedNumber, own
         throw pastDateError;
     }
 
-    if (tenantUser && !isReceptionistActiveForUser(tenantUser)) {
+    if (tenantUser && String(tenantUser.receptionistStatus || 'paused') === 'paused') {
         return {
             date: targetDate,
             availableSlots: [],
             fullyBooked: true,
-            inactiveReason: 'AI receptionist is currently outside active schedule.'
+            inactiveReason: 'AI receptionist is paused.'
         };
     }
 
+    const schedule = normalizeWeeklySchedule(safeJsonParse(
+        tenantUser?.receptionistWeeklySchedule,
+        getDefaultWeeklySchedule()
+    ));
+    const requestedWeekday = dayNames[new Date(`${targetDate}T12:00:00.000Z`).getUTCDay()];
+    const scheduleRow = schedule.find((row) => row.day === requestedWeekday);
+    if (!scheduleRow?.enabled) {
+        return {
+            date: targetDate,
+            availableSlots: [],
+            fullyBooked: true,
+            inactiveReason: 'The business is not accepting bookings on that day.'
+        };
+    }
+
+    const startMinutes = parseTimeToMinutes(scheduleRow.start);
+    const endMinutes = parseTimeToMinutes(scheduleRow.end);
+    if (startMinutes === null || endMinutes === null || endMinutes <= startMinutes) {
+        return { date: targetDate, availableSlots: [], fullyBooked: true, inactiveReason: 'Booking hours are not configured.' };
+    }
+
+    const bookingRules = safeJsonParse(tenantUser?.receptionistBookingRules, {});
+    const durationMinutes = Math.max(parseRuleMinutes(bookingRules.duration, 30), 5);
+    const bufferMinutes = Math.max(parseRuleMinutes(bookingRules.buffer, 0), 0);
+    const minNoticeMinutes = Math.max(parseRuleMinutes(bookingRules.minNotice, 0), 0);
+    const slotStep = durationMinutes + bufferMinutes;
+    const allSlots = [];
+    for (let current = startMinutes; current + durationMinutes <= endMinutes; current += slotStep) {
+        allSlots.push(current);
+    }
+
     const bookedSlotSet = await getBookedSlotSetForDate(targetDate, tenantUser?.id);
-    const allSlots = generateDailySlots({});
+    const targetParts = targetDate.split('-').map(Number);
+    let minimumComparable = 0;
+    try {
+        minimumComparable = getTenantLocalComparableNow(tenantUser?.timezone) + minNoticeMinutes * 60_000;
+    } catch {
+        minimumComparable = Date.now() + minNoticeMinutes * 60_000;
+    }
 
     const availableSlots = allSlots
         .filter((slot) => !bookedSlotSet.has(slot))
+        .filter((slot) => Date.UTC(
+            targetParts[0],
+            targetParts[1] - 1,
+            targetParts[2],
+            Math.floor(slot / 60),
+            slot % 60
+        ) >= minimumComparable)
         .map((slot) => formatMinutesToHHmm(slot));
 
     return {
@@ -1986,7 +2117,7 @@ const getAppointmentAvailability = async ({ date, tenantEmail, dialedNumber, own
     };
 };
 
-const cancelAppointment = async ({ appointmentId, reason, tenantEmail, dialedNumber, ownerPhone, actor }) => {
+const cancelAppointment = async ({ appointmentId, reason, tenantEmail, dialedNumber, ownerPhone, customerPhone, actor }) => {
     const tenantUser = await resolveTenantUserForOperation({ actor, tenantEmail, dialedNumber, ownerPhone });
     ensureTenantForAutomation({ actor, tenantUser });
     const where = { id: appointmentId };
@@ -1997,6 +2128,16 @@ const cancelAppointment = async ({ appointmentId, reason, tenantEmail, dialedNum
     const appointment = await Appointment.findOne({ where });
     if (!appointment) {
         return null;
+    }
+
+    if (customerPhone) {
+        const referenceNumber = tenantUser?.inboundNumber || dialedNumber;
+        const expectedPhone = normalizeAutomationPhone(customerPhone, referenceNumber);
+        const ownerContact = await AppointmentContact.findOne({ where: { appointmentId: appointment.id } });
+        const contactPhone = normalizeAutomationPhone(ownerContact?.phone, referenceNumber);
+        if (!expectedPhone || !contactPhone || expectedPhone !== contactPhone) {
+            return null;
+        }
     }
 
     const previousStatus = appointment.status;
@@ -2110,7 +2251,7 @@ const updateAppointmentStatus = async ({ appointmentId, status, tenantEmail, dia
     };
 };
 
-const rescheduleAppointment = async ({ appointmentId, date, time, tenantEmail, dialedNumber, ownerPhone, actor }) => {
+const rescheduleAppointment = async ({ appointmentId, date, time, tenantEmail, dialedNumber, ownerPhone, customerPhone, actor }) => {
     const tenantUser = await resolveTenantUserForOperation({ actor, tenantEmail, dialedNumber, ownerPhone });
     ensureTenantForAutomation({ actor, tenantUser });
     const where = { id: appointmentId };
@@ -2123,6 +2264,16 @@ const rescheduleAppointment = async ({ appointmentId, date, time, tenantEmail, d
         return null;
     }
 
+    if (customerPhone) {
+        const referenceNumber = tenantUser?.inboundNumber || dialedNumber;
+        const expectedPhone = normalizeAutomationPhone(customerPhone, referenceNumber);
+        const ownerContact = await AppointmentContact.findOne({ where: { appointmentId: appointment.id } });
+        const contactPhone = normalizeAutomationPhone(ownerContact?.phone, referenceNumber);
+        if (!expectedPhone || !contactPhone || expectedPhone !== contactPhone) {
+            return null;
+        }
+    }
+
     const requestedMinutes = parseTimeToMinutes(time);
     if (requestedMinutes === null) {
         const invalidTimeError = new Error('Invalid appointment time format');
@@ -2132,10 +2283,38 @@ const rescheduleAppointment = async ({ appointmentId, date, time, tenantEmail, d
 
     assertAppointmentNotInPast(date, requestedMinutes);
 
-    appointment.appointmentDate = date || appointment.appointmentDate;
-    appointment.appointmentTime = formatMinutesToHHmm(requestedMinutes);
-    appointment.status = 'Pending';
-    await appointment.save();
+    const formattedTime = formatMinutesToHHmm(requestedMinutes);
+    const previousStatus = appointment.status;
+    await sequelize.transaction(async (transaction) => {
+        await User.findByPk(tenantUser.id, {
+            transaction,
+            lock: transaction.LOCK.UPDATE
+        });
+        const occupiedSlot = await Appointment.findOne({
+            where: {
+                id: { [Op.ne]: appointment.id },
+                userId: tenantUser.id,
+                appointmentDate: date,
+                appointmentTime: formattedTime,
+                status: { [Op.in]: ['Pending', 'Confirmed'] }
+            },
+            transaction,
+            lock: transaction.LOCK.UPDATE
+        });
+        if (occupiedSlot) {
+            throw await buildSlotUnavailableError({
+                date,
+                requestedMinutes,
+                userId: tenantUser.id,
+                transaction
+            });
+        }
+
+        appointment.appointmentDate = date || appointment.appointmentDate;
+        appointment.appointmentTime = formattedTime;
+        appointment.status = 'Pending';
+        await appointment.save({ transaction });
+    });
 
     await AutomationEvent.create({
         source: 'system',
@@ -2152,6 +2331,17 @@ const rescheduleAppointment = async ({ appointmentId, date, time, tenantEmail, d
         },
         status: 'processed',
         processedAt: new Date()
+    });
+
+    const contact = await AppointmentContact.findOne({ where: { appointmentId: appointment.id } });
+    await triggerManualAppointmentNotification({
+        appointment,
+        contact,
+        tenantUser,
+        tenantEmail,
+        ownerPhone,
+        action: 'rescheduled',
+        previousStatus
     });
 
     return {
@@ -2891,6 +3081,7 @@ module.exports = {
     getKnowledgeBaseEntries,
     findUpcomingAppointmentsForTenant,
     queryKnowledgeForTenant,
+    isReceptionistActiveForUser,
     createKnowledgeBaseEntry,
     deleteKnowledgeBaseEntry,
     createDemoBooking,

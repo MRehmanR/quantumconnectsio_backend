@@ -15,8 +15,9 @@ process.env.RETELL_API_KEY = apiKey;
 process.env.N8N_MANUAL_APPOINTMENT_WEBHOOK_URL = '';
 
 const { sequelize } = require('../src/config/db');
-const { User, CallLog, UsageCycle } = require('../src/models');
+const { User, CallLog, UsageCycle, AutomationEvent } = require('../src/models');
 const automationRoutes = require('../src/routes/automation.routes');
+const usageEnforcementService = require('../src/services/usage-enforcement.service');
 
 let server;
 let baseUrl;
@@ -92,21 +93,29 @@ test('Retell endpoints reject an invalid signature before changing state', async
     assert.equal(await UsageCycle.count({ where: { userId: tenant.id } }), 0);
 });
 
-test('signed inbound endpoint returns tenant-specific Retell routing', async () => {
-    const response = await signedPost('/api/automation/retell/inbound', {
+test('signed inbound retries without a call id reserve usage only once', async () => {
+    const inboundBody = {
         event: 'call_inbound',
         call_inbound: {
-            call_id: 'call_http_lifecycle',
             from_number: '+447700900001',
             to_number: tenant.inboundNumber
         }
-    });
+    };
+    const rawBody = JSON.stringify(inboundBody);
+    const timestamp = Date.now();
+    const retrySignature = signatureFor(rawBody, timestamp);
+    const response = await signedPost('/api/automation/retell/inbound', inboundBody, retrySignature);
+    const retry = await signedPost('/api/automation/retell/inbound', inboundBody, retrySignature);
     const responseBody = await response.json();
+    const retryBody = await retry.json();
 
     assert.equal(response.status, 200);
+    assert.equal(retry.status, 200);
     assert.equal(responseBody.call_inbound.override_agent_id, tenant.retellAgentId);
+    assert.equal(retryBody.call_inbound.override_agent_id, tenant.retellAgentId);
     const usage = await UsageCycle.findOne({ where: { userId: tenant.id } });
     assert.equal(usage.concurrentCallsActive, 1);
+    assert.equal((await tenant.reload()).callsUsed, 1);
 });
 
 test('duplicate call_ended events finalize usage once and upsert one call', async () => {
@@ -131,7 +140,65 @@ test('duplicate call_ended events finalize usage once and upsert one call', asyn
     assert.equal(await CallLog.count({ where: { retellCallId: 'call_http_lifecycle' } }), 1);
     const usage = await UsageCycle.findOne({ where: { userId: tenant.id } });
     assert.equal(usage.concurrentCallsActive, 0);
-    assert.equal(tenant.callsUsed + 1, (await tenant.reload()).callsUsed);
+    assert.equal((await tenant.reload()).callsUsed, 1);
+});
+
+test('a failed call finalization remains retryable and releases concurrency on retry', async () => {
+    await signedPost('/api/automation/retell/inbound', {
+        event: 'call_inbound',
+        call_inbound: {
+            from_number: '+447700900098',
+            to_number: tenant.inboundNumber
+        }
+    });
+
+    const originalFinalizeCall = usageEnforcementService.finalizeCall;
+    let attempts = 0;
+    let retryStartedResolve;
+    const retryStarted = new Promise((resolve) => {
+        retryStartedResolve = resolve;
+    });
+    usageEnforcementService.finalizeCall = async (...args) => {
+        attempts += 1;
+        if (attempts === 1) {
+            throw new Error('transient finalization failure');
+        }
+        retryStartedResolve();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return originalFinalizeCall(...args);
+    };
+
+    const eventBody = {
+        event: 'call_ended',
+        call: {
+            call_id: 'call_retry_finalization',
+            from_number: '+447700900098',
+            to_number: tenant.inboundNumber,
+            start_timestamp: Date.now() - 30_000,
+            end_timestamp: Date.now()
+        }
+    };
+
+    try {
+        const failed = await signedPost('/api/automation/retell/events', eventBody);
+        const retriedRequest = signedPost('/api/automation/retell/events', eventBody);
+        await retryStarted;
+        const concurrentRetry = await signedPost('/api/automation/retell/events', eventBody);
+        const retried = await retriedRequest;
+
+        assert.equal(failed.status, 500);
+        assert.equal(retried.status, 202);
+        assert.equal(concurrentRetry.status, 202);
+        assert.equal(attempts, 2);
+        const event = await AutomationEvent.findOne({
+            where: { idempotencyKey: 'retell:call_ended:call_retry_finalization' }
+        });
+        assert.equal(event.status, 'processed');
+        const usage = await UsageCycle.findOne({ where: { userId: tenant.id } });
+        assert.equal(usage.concurrentCallsActive, 0);
+    } finally {
+        usageEnforcementService.finalizeCall = originalFinalizeCall;
+    }
 });
 
 test('signed custom-function endpoint executes against the called tenant', async () => {

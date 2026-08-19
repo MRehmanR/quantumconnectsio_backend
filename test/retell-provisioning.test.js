@@ -62,6 +62,9 @@ test('provider sync patches only webhooks and merged tools without replacing the
     const requests = [];
     const request = async (input) => {
         requests.push(input);
+        if (input.method === 'GET' && input.url.includes('/get-phone-number/')) {
+            return { inbound_webhook_url: '' };
+        }
         if (input.method === 'GET' && input.url.includes('/get-agent/')) {
             return {
                 agent_id: 'agent_tenant_42',
@@ -114,6 +117,9 @@ test('dry-run reconciliation performs no provider mutations', async () => {
     const requests = [];
     const request = async (input) => {
         requests.push(input);
+        if (input.url.includes('/get-phone-number/')) {
+            return { inbound_webhook_url: '' };
+        }
         if (input.url.includes('/get-agent/')) {
             return {
                 response_engine: { type: 'retell-llm', llm_id: 'llm_dry_run' }
@@ -136,7 +142,8 @@ test('dry-run reconciliation performs no provider mutations', async () => {
     }, { request, dryRun: true });
 
     assert.equal(result.applied, false);
-    assert.deepEqual(requests.map((entry) => entry.method), ['GET', 'GET']);
+    assert.equal(requests.every((entry) => entry.method === 'GET'), true);
+    assert.equal(requests.length, 3);
 });
 
 test('public Retell callback URLs must use HTTPS outside development', () => {

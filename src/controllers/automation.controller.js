@@ -47,7 +47,11 @@ exports.handleRetellInbound = async (req, res) => {
 
         const normalized = retellIntegrationService.normalizeInboundRequest(req.body);
         const result = await retellIntegrationService.handleInboundCall(normalized, {
-            preflightKey: req.body?.call_inbound?.call_id || req.body?.event_id || ''
+            preflightKey: retellIntegrationService.buildInboundRetryKey({
+                signature: readSignature(req),
+                fromNumber: normalized.fromNumber,
+                toNumber: normalized.toNumber
+            })
         });
 
         return res.status(200).json(result);
@@ -284,23 +288,28 @@ exports.queryKnowledgeBaseLegacy = async (req, res) => {
             return;
         }
 
-        const query = String(req.body.query || '').trim().toLowerCase();
-        const entries = await dashboardDataService.getKnowledgeBaseEntries();
-        const match = entries.find((entry) => {
-            const title = String(entry.title || '').toLowerCase();
-            const content = String(entry.content || '').toLowerCase();
-            return title.includes(query) || content.includes(query);
-        }) || entries[0] || null;
+        const tenant = await automationService.resolveAutomationTenant({
+            tenantEmail: req.body.tenantEmail,
+            dialedNumber: getDialedNumber(req.body)
+        });
+        if (!tenant) {
+            return res.status(400).json({ success: false, message: 'Tenant context is missing or inconsistent.' });
+        }
+
+        const match = await dashboardDataService.queryKnowledgeForTenant({
+            tenant,
+            query: req.body.query
+        });
 
         await automationService.ingestEvent({
             source: 'n8n',
             eventType: 'kb.query',
             idempotencyKey: req.body.idempotencyKey || `kb_${Date.now()}`,
-            tenantEmail: req.body.tenantEmail,
+            tenantEmail: tenant.email,
             occurredAt: new Date(),
             payload: {
                 query: req.body.query || '',
-                answer: match ? match.content : '',
+                answer: match ? match.answer : '',
                 confidence: match ? 0.7 : 0,
                 escalated: !match
             }
@@ -309,7 +318,7 @@ exports.queryKnowledgeBaseLegacy = async (req, res) => {
         return res.status(200).json({
             success: true,
             data: {
-                answer: match ? match.content : 'No knowledge base answer found.',
+                answer: match ? match.answer : 'No knowledge base answer found.',
                 confidence: match ? 0.7 : 0,
                 escalated: !match
             }

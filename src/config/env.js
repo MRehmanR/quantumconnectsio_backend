@@ -23,7 +23,6 @@ module.exports = {
     ADMIN_EMAIL: process.env.ADMIN_EMAIL || 'admin@example.com',
     ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || 'Admin@12345',
     AUTOMATION_SHARED_KEY: process.env.AUTOMATION_SHARED_KEY || '',
-    RETELL_WEBHOOK_SECRET: process.env.RETELL_WEBHOOK_SECRET || '',
     TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID || '',
     TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN || '',
     TWILIO_NUMBER_COUNTRY: process.env.TWILIO_NUMBER_COUNTRY || 'US',

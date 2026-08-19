@@ -269,6 +269,34 @@ const ensureSchemaColumns = async () => {
             defaultValue: null
         });
     }
+    if (!callLogsTable.summary) {
+        await queryInterface.addColumn('call_logs', 'summary', {
+            type: Sequelize.TEXT,
+            allowNull: false,
+            defaultValue: ''
+        });
+    }
+    if (!callLogsTable.callSuccessful) {
+        await queryInterface.addColumn('call_logs', 'callSuccessful', {
+            type: Sequelize.BOOLEAN,
+            allowNull: true,
+            defaultValue: null
+        });
+    }
+    if (!callLogsTable.disconnectionReason) {
+        await queryInterface.addColumn('call_logs', 'disconnectionReason', {
+            type: Sequelize.STRING,
+            allowNull: false,
+            defaultValue: ''
+        });
+    }
+    if (!callLogsTable.endedAt) {
+        await queryInterface.addColumn('call_logs', 'endedAt', {
+            type: Sequelize.DATE,
+            allowNull: true,
+            defaultValue: null
+        });
+    }
 
     const appointmentsTable = await queryInterface.describeTable('appointments');
     if (!appointmentsTable.depositStatus) {

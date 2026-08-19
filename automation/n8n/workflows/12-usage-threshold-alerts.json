@@ -166,7 +166,7 @@
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ { success: true, route: ($json.usagePercent >= 100 ? 'usage_threshold_100_logged' : ($json.usagePercent >= 80 ? 'usage_threshold_80_logged' : 'below_threshold_no_alert')), usagePercent: $json.usagePercent, callId: $json.callId, executionId: $execution.id } }}",
+        "responseBody": "={{ { success: true, route: ($json.usagePercent >= 100 ? 'usage_threshold_100_logged' : ($json.usagePercent >= 70 ? 'usage_threshold_70_logged' : 'below_threshold_no_alert')), usagePercent: $json.usagePercent, callId: $json.callId, executionId: $execution.id } }}",
         "options": {}
       },
       "id": "Respond_Done",

@@ -14,7 +14,7 @@ process.env.N8N_USAGE_THRESHOLD_WEBHOOK_URL = 'https://n8n.example.test/webhook/
 process.env.N8N_MANUAL_APPOINTMENT_WEBHOOK_URL = 'https://n8n.example.test/webhook/qc-v2-appointments';
 
 const { sequelize } = require('../src/config/db');
-const { User, Appointment, AutomationEvent, UsageCycle, CallLog } = require('../src/models');
+const { User, Appointment, AutomationEvent, UsageCycle, CallLog, KnowledgeBaseEntry } = require('../src/models');
 const {
     buildN8nJob,
     dispatchN8nJob
@@ -199,6 +199,34 @@ test('usage thresholds dispatch a tenant-explicit n8n job after usage is committ
         assert.equal(deliveredJob.jobType, 'usage.threshold.70');
         assert.equal(deliveredJob.tenant.id, String(tenant.id));
         assert.equal(deliveredJob.payload.usage.used, 140);
+        assert.equal(deliveredJob.payload.usagePercent, 70);
+    } finally {
+        global.fetch = originalFetch;
+    }
+});
+
+test('appointment reschedules dispatch the canonical tenant notification job', async () => {
+    const appointment = await Appointment.findOne({ where: { userId: tenant.id } });
+    const originalFetch = global.fetch;
+    let deliveredJob = null;
+    global.fetch = async (_url, options) => {
+        deliveredJob = JSON.parse(options.body);
+        return { ok: true, status: 202, text: async () => 'accepted' };
+    };
+
+    try {
+        const nextDate = new Date(Date.now() + 11 * 86_400_000).toISOString().slice(0, 10);
+        await dashboardDataService.rescheduleAppointment({
+            appointmentId: appointment.id,
+            date: nextDate,
+            time: '16:00',
+            tenantEmail: tenant.email,
+            dialedNumber: tenant.inboundNumber
+        });
+
+        assert.equal(deliveredJob.jobType, 'appointment.rescheduled');
+        assert.equal(deliveredJob.jobId, `appointment:rescheduled:${appointment.id}:Pending`);
+        assert.equal(deliveredJob.tenant.id, String(tenant.id));
     } finally {
         global.fetch = originalFetch;
     }
@@ -220,6 +248,42 @@ test('daily summary tenant endpoint requires automation auth and returns active 
         inboundNumber: tenant.inboundNumber,
         timezone: tenant.timezone
     }]);
+});
+
+test('legacy n8n knowledge queries cannot read another tenant knowledge base', async () => {
+    const otherTenant = await User.create({
+        username: 'n8n-kb-other',
+        email: 'n8n-kb-other@example.test',
+        password: 'test-only',
+        businessName: 'Other Knowledge Tenant',
+        inboundNumber: '+447700900005',
+        timezone: 'Europe/London',
+        plan: 'Core',
+        status: 'Active'
+    });
+    await KnowledgeBaseEntry.bulkCreate([
+        { userId: tenant.id, title: 'Public opening hours', content: 'Tenant A opens at nine.' },
+        { userId: otherTenant.id, title: 'Private moon package', content: 'Tenant B secret moon itinerary.' }
+    ]);
+
+    const response = await fetch(`${baseUrl}/api/automation/kb/query`, {
+        method: 'POST',
+        headers: {
+            'content-type': 'application/json',
+            'x-automation-key': 'automation-test-key'
+        },
+        body: JSON.stringify({
+            tenantEmail: tenant.email,
+            dialedNumber: tenant.inboundNumber,
+            query: 'secret moon itinerary',
+            idempotencyKey: 'kb_tenant_isolation'
+        })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.data.answer, 'No knowledge base answer found.');
+    assert.doesNotMatch(body.data.answer, /tenant b secret/i);
 });
 
 test('daily summaries count calls and appointments for only the requested tenant', async () => {
