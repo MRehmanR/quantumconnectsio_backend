@@ -18,6 +18,7 @@ const {
 const { sequelize } = require('../config/db');
 const { AUTOMATION_SHARED_KEY, RETELL_API_KEY } = require('../config/env');
 const usageEnforcementService = require('./usage-enforcement.service');
+const { buildN8nJob, dispatchN8nJob } = require('./n8n-dispatch.service');
 
 const normalizeIdempotencyKey = ({ idempotencyKey, eventType, occurredAt, payload }) => {
     if (idempotencyKey && String(idempotencyKey).trim()) {
@@ -386,6 +387,20 @@ const maybeEmitThresholdEvents = async ({ userId, tenantEmail, usage }) => {
     if (!cycle) {
         return;
     }
+    const tenant = await User.findByPk(userId);
+    const dispatchThreshold = async (threshold) => {
+        if (!tenant?.inboundNumber) {
+            return;
+        }
+        const cycleDate = new Date(cycle.cycleStart).toISOString().slice(0, 10);
+        const job = buildN8nJob({
+            jobType: `usage.threshold.${threshold}`,
+            jobId: `usage:${threshold}:${userId}:${cycleDate}`,
+            tenant,
+            payload: { usage, threshold }
+        });
+        await dispatchN8nJob(job);
+    };
 
     if (usage.threshold70Reached && !cycle.alert70SentAt) {
         cycle.alert70SentAt = new Date();
@@ -403,6 +418,7 @@ const maybeEmitThresholdEvents = async ({ userId, tenantEmail, usage }) => {
             status: 'processed',
             processedAt: new Date()
         });
+        await dispatchThreshold(70);
     }
 
     if (usage.threshold100Reached && !cycle.alert100SentAt) {
@@ -421,6 +437,7 @@ const maybeEmitThresholdEvents = async ({ userId, tenantEmail, usage }) => {
             status: 'processed',
             processedAt: new Date()
         });
+        await dispatchThreshold(100);
     }
 };
 
@@ -610,6 +627,25 @@ const preflightInboundCall = async ({ tenantEmail, dialedNumber, callerNumber, i
     return result;
 };
 
+const listDailySummaryTenants = async () => {
+    const users = await User.findAll({
+        where: {
+            role: 'user',
+            status: 'Active'
+        },
+        attributes: ['id', 'email', 'inboundNumber', 'timezone'],
+        order: [['id', 'ASC']]
+    });
+
+    return users
+        .filter((user) => String(user.inboundNumber || '').trim())
+        .map((user) => ({
+            id: String(user.id),
+            email: user.email,
+            inboundNumber: user.inboundNumber,
+            timezone: user.timezone || 'UTC'
+        }));
+};
 const finalizeInboundCall = async ({ tenantEmail, dialedNumber, wasConnected }) => {
     return usageEnforcementService.finalizeCall({ tenantEmail, dialedNumber, wasConnected });
 };
@@ -861,6 +897,7 @@ module.exports = {
     ingestEvent,
     upsertWorkflowExecution,
     getAutomationOverview,
+    listDailySummaryTenants,
     preflightInboundCall,
     finalizeInboundCall,
     triggerWaitlistBatch,

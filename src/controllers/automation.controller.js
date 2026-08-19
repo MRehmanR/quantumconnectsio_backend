@@ -377,6 +377,18 @@ exports.getAutomationOverview = async (req, res) => {
     }
 };
 
+exports.listDailySummaryTenants = async (req, res) => {
+    try {
+        if (!requireAutomationKey(req, res)) {
+            return;
+        }
+
+        const data = await automationService.listDailySummaryTenants();
+        return res.status(200).json({ success: true, data });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: error.message || 'Failed to list daily summary tenants' });
+    }
+};
 exports.preflightInboundCall = async (req, res) => {
     try {
         const providedKey = req.headers['x-automation-key'];

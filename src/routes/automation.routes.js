@@ -24,6 +24,7 @@ router.post('/kb/query', automationController.queryKnowledgeBaseLegacy);
 router.post('/waitlist/trigger-batch', automationController.triggerWaitlistBatch);
 router.post('/waitlist/respond', automationController.handleWaitlistResponse);
 router.post('/summaries/daily', automationController.generateDailySummary);
+router.get('/tenants/daily-summary', automationController.listDailySummaryTenants);
 router.post('/compliance/cleanup', automationController.runRetentionCleanup);
 router.post('/provisioning/retry/:userId', automationController.retryProvisioning);
 router.get('/overview', authenticate, adminMiddleware, automationController.getAutomationOverview);

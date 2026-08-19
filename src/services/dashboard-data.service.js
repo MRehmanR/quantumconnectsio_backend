@@ -22,7 +22,6 @@ const {
 const { defaultFeatureToggles } = require('../constants/feature-toggles');
 const {
     N8N_MANUAL_APPOINTMENT_WEBHOOK_URL,
-    AUTOMATION_SHARED_KEY,
     BILLING_PORTAL_URL,
     FRONTEND_APP_URL,
     STRIPE_SECRET_KEY,
@@ -35,6 +34,7 @@ const {
     DEMO_NOTIFICATION_EMAIL
 } = require('../config/env');
 const provisioningService = require('./provisioning.service');
+const { buildN8nJob, dispatchN8nJob } = require('./n8n-dispatch.service');
 const { normalizePhone, getCountryHintFromE164 } = require('../utils/phone');
 const { resolveCountryFromPayload, normalizeCountryCode } = require('../utils/country');
 const {
@@ -959,20 +959,15 @@ const triggerManualAppointmentNotification = async ({
     previousStatus,
     extraPayload
 }) => {
-    const webhookUrl = String(N8N_MANUAL_APPOINTMENT_WEBHOOK_URL || '').trim();
-    if (!webhookUrl) {
+    if (!tenantUser?.id || !tenantUser?.inboundNumber) {
         return { attempted: false, ok: false, status: 0, message: 'Webhook URL is not configured' };
     }
 
-    const sharedKey = String(AUTOMATION_SHARED_KEY || '').trim();
-
     const payload = {
-        source: 'backend.dashboard',
         action,
         appointmentId: String(appointment.id),
         status: appointment.status,
         previousStatus: previousStatus || '',
-        tenantEmail: tenantUser?.email || tenantEmail || '',
         ownerPhone: String(ownerPhone || tenantUser?.ownerPhone || '').trim(),
         customerName: contact?.name || appointment.caller || '',
         customerPhone: contact?.phone || '',
@@ -980,49 +975,16 @@ const triggerManualAppointmentNotification = async ({
         appointmentDate: appointment.appointmentDate,
         appointmentTime: appointment.appointmentTime,
         appointmentType: appointment.type,
-        ...((extraPayload && typeof extraPayload === 'object') ? extraPayload : {}),
-        occurredAt: new Date().toISOString(),
-        idempotencyKey: `manual_appointment_${action}_${appointment.id}_${Date.now()}`,
-        automationKey: sharedKey
+        ...((extraPayload && typeof extraPayload === 'object') ? extraPayload : {})
     };
+    const job = buildN8nJob({
+        jobType: `appointment.${action}`,
+        jobId: `appointment:${action}:${appointment.id}:${appointment.status}`,
+        tenant: tenantUser,
+        payload
+    });
 
-    try {
-        const response = await fetch(webhookUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'x-automation-key': sharedKey
-            },
-            body: JSON.stringify(payload)
-        });
-
-        const body = await response.text().catch(() => '');
-
-        if (!response.ok) {
-            console.warn(`Manual appointment notification webhook failed (${response.status}): ${body}`);
-            return {
-                attempted: true,
-                ok: false,
-                status: response.status,
-                message: body || `HTTP ${response.status}`
-            };
-        }
-
-        return {
-            attempted: true,
-            ok: true,
-            status: response.status,
-            message: body || 'Notification webhook accepted'
-        };
-    } catch (error) {
-        console.warn(`Manual appointment notification webhook error: ${error.message}`);
-        return {
-            attempted: true,
-            ok: false,
-            status: 0,
-            message: error.message
-        };
-    }
+    return dispatchN8nJob(job);
 };
 
 const resolvePerformanceWindow = ({ range, startDate, endDate }) => {
