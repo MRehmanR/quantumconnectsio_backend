@@ -780,20 +780,34 @@ const handleWaitlistResponse = async ({ waitlistEntryId, customerPhone, reply, t
 };
 
 const generateDailySummary = async ({ tenantEmail, targetDate }) => {
+    const normalizedTenantEmail = String(tenantEmail || '').trim();
+    if (!normalizedTenantEmail) {
+        const error = new Error('Tenant email is required for a daily summary');
+        error.code = 'TENANT_REQUIRED';
+        throw error;
+    }
+
     const date = targetDate ? new Date(targetDate) : new Date();
     const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
     const end = new Date(start);
     end.setDate(end.getDate() + 1);
 
-    const user = tenantEmail ? await User.findOne({ where: { email: tenantEmail } }) : null;
+    const user = await User.findOne({ where: { email: normalizedTenantEmail } });
+    if (!user) {
+        const error = new Error('Tenant not found for daily summary');
+        error.code = 'TENANT_NOT_FOUND';
+        throw error;
+    }
+    const tenantScope = { userId: user.id };
+    const createdToday = { [Op.gte]: start, [Op.lt]: end };
 
     const [totalCalls, bookings, cancellations, escalations, noShows, kbQueries] = await Promise.all([
-        CallLog.count({ where: { callTime: { [Op.between]: [start, end] } } }),
-        Appointment.count({ where: { createdAt: { [Op.between]: [start, end] }, status: { [Op.in]: ['Confirmed', 'Pending'] } } }),
-        Appointment.count({ where: { updatedAt: { [Op.between]: [start, end] }, status: 'Cancelled' } }),
-        EscalationLog.count({ where: { createdAt: { [Op.between]: [start, end] }, ...(user ? { userId: user.id } : {}) } }),
-        Appointment.count({ where: { updatedAt: { [Op.between]: [start, end] }, status: 'NoShow' } }),
-        KbQueryLog.count({ where: { createdAt: { [Op.between]: [start, end] }, ...(user ? { userId: user.id } : {}) } })
+        CallLog.count({ where: { ...tenantScope, callTime: createdToday } }),
+        Appointment.count({ where: { ...tenantScope, createdAt: createdToday, status: { [Op.in]: ['Confirmed', 'Pending'] } } }),
+        Appointment.count({ where: { ...tenantScope, updatedAt: createdToday, status: 'Cancelled' } }),
+        EscalationLog.count({ where: { ...tenantScope, createdAt: createdToday } }),
+        Appointment.count({ where: { ...tenantScope, updatedAt: createdToday, status: 'NoShow' } }),
+        KbQueryLog.count({ where: { ...tenantScope, createdAt: createdToday } })
     ]);
 
     const payload = {
@@ -809,8 +823,8 @@ const generateDailySummary = async ({ tenantEmail, targetDate }) => {
     await AutomationEvent.create({
         source: 'system',
         eventType: 'daily.summary.generated',
-        idempotencyKey: `daily_summary_${tenantEmail || 'all'}_${payload.date}`,
-        tenantEmail: tenantEmail || '',
+        idempotencyKey: `daily_summary_${normalizedTenantEmail}_${payload.date}`,
+        tenantEmail: normalizedTenantEmail,
         occurredAt: new Date(),
         payload,
         status: 'processed',

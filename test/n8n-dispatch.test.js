@@ -14,7 +14,7 @@ process.env.N8N_USAGE_THRESHOLD_WEBHOOK_URL = 'https://n8n.example.test/webhook/
 process.env.N8N_MANUAL_APPOINTMENT_WEBHOOK_URL = 'https://n8n.example.test/webhook/qc-v2-appointments';
 
 const { sequelize } = require('../src/config/db');
-const { User, Appointment, AutomationEvent, UsageCycle } = require('../src/models');
+const { User, Appointment, AutomationEvent, UsageCycle, CallLog } = require('../src/models');
 const {
     buildN8nJob,
     dispatchN8nJob
@@ -220,4 +220,33 @@ test('daily summary tenant endpoint requires automation auth and returns active 
         inboundNumber: tenant.inboundNumber,
         timezone: tenant.timezone
     }]);
+});
+
+test('daily summaries count calls and appointments for only the requested tenant', async () => {
+    const otherTenant = await User.create({
+        username: 'n8n-other-active',
+        email: 'n8n-other-active@example.test',
+        password: 'test-only',
+        businessName: 'Other Active Tenant',
+        inboundNumber: '+447700900004',
+        timezone: 'Europe/London',
+        plan: 'Core',
+        status: 'Active'
+    });
+    const now = new Date();
+    const date = now.toISOString().slice(0, 10);
+
+    await CallLog.bulkCreate([
+        { userId: tenant.id, inboundNumber: tenant.inboundNumber, callerNumber: '+447700900010', callTime: now },
+        { userId: otherTenant.id, inboundNumber: otherTenant.inboundNumber, callerNumber: '+447700900011', callTime: now }
+    ]);
+    await Appointment.bulkCreate([
+        { userId: tenant.id, inboundNumber: tenant.inboundNumber, caller: 'Tenant Caller', appointmentDate: date, appointmentTime: '10:00', status: 'Confirmed' },
+        { userId: otherTenant.id, inboundNumber: otherTenant.inboundNumber, caller: 'Other Caller', appointmentDate: date, appointmentTime: '11:00', status: 'Confirmed' }
+    ]);
+
+    const summary = await automationService.generateDailySummary({ tenantEmail: tenant.email, targetDate: date });
+
+    assert.equal(summary.totalCalls, 1);
+    assert.equal(summary.bookings, 2);
 });
