@@ -8,7 +8,9 @@ The production call path is:
 
 ```text
 Caller
-  -> Retell phone number
+  -> Twilio-purchased business number
+  -> Quantum Connects Twilio Elastic SIP trunk
+  -> Retell imported SIP phone number
   -> POST /api/automation/retell/inbound
   -> tenant selected by the exact called number
   -> tenant Retell agent
@@ -20,6 +22,18 @@ Caller
 
 n8n is used for asynchronous jobs such as usage alerts, notifications, summaries, reviews, and waitlist handling. Workflow 11 is a regression/Postman workflow and must not be configured as the live Retell webhook.
 
+The paid-plan provisioning path is:
+
+```text
+Successful paid plan
+  -> backend buys or reuses a Twilio number
+  -> backend ensures the shared Twilio SIP trunk and Retell origination URL
+  -> backend attaches the purchased number SID to the trunk
+  -> backend creates or reuses the Retell agent
+  -> backend imports/binds the phone number in Retell
+  -> backend syncs Retell inbound, tool, and event webhooks
+```
+
 Retell's current contract sends inbound calls without a call ID, waits up to 10 seconds for the inbound webhook, and can retry it up to three times. The backend handles those retries idempotently. Retell signs inbound, function, and event requests with `X-Retell-Signature`; the backend verifies the raw request body before reading or writing tenant data.
 
 Official references:
@@ -28,6 +42,10 @@ Official references:
 - [Retell secure webhook verification](https://docs.retellai.com/features/secure-webhook)
 - [Retell custom functions](https://docs.retellai.com/build/conversation-flow/custom-function)
 - [Retell call event webhooks](https://docs.retellai.com/features/webhook-overview)
+- [Retell Twilio SIP trunking](https://docs.retellai.com/deploy/twilio)
+- [Retell import phone number API](https://docs.retellai.com/api-references/import-phone-number)
+- [Twilio SIP trunking](https://www.twilio.com/docs/sip-trunking)
+- [Twilio trunk phone-number API](https://www.twilio.com/docs/sip-trunking/api/phonenumber-resource)
 - [n8n execution inspection and retries](https://docs.n8n.io/workflows/executions/all-executions/)
 
 ## Safety rules
@@ -44,7 +62,7 @@ Official references:
 
 ### 1. Confirm the deployed versions
 
-The backend should contain commit `656b75a` or a later commit. The frontend should contain commit `878863a` or a later commit.
+The backend should include the multi-tenant Retell webhooks and the Twilio SIP trunk auto-provisioning helper. The frontend should contain commit `878863a` or a later commit.
 
 Confirm the public backend responds:
 
@@ -66,11 +84,21 @@ Do not continue if the URL is private, uses HTTP, redirects to a login page, or 
 Configure these in the deployed backend environment, not in source control:
 
 ```text
+TWILIO_ACCOUNT_SID=<Quantum Connects master Twilio account SID>
+TWILIO_AUTH_TOKEN=<Quantum Connects master Twilio auth token>
+TWILIO_NUMBER_COUNTRY=US
+TWILIO_AUTO_ASSIGN_COUNTRIES=US,CA,GB
+TWILIO_SIP_TRUNK_SID=<optional existing Twilio SIP trunk SID>
+TWILIO_SIP_TRUNK_DOMAIN=quantumconnects-retell.pstn.twilio.com
+TWILIO_SIP_TRUNK_FRIENDLY_NAME=Quantum Connects Retell
+TWILIO_SIP_ORIGINATION_URI=sip:sip.retellai.com;transport=tcp
 RETELL_API_KEY=<Retell webhook-designated API key>
 PUBLIC_API_BASE_URL=https://api.your-domain.example
 AUTOMATION_SHARED_KEY=<strong random value used only by backend and n8n>
 FRONTEND_APP_URL=https://app.your-domain.example
 ```
+
+Use one shared Quantum Connects Twilio account for all tenants. `TWILIO_SIP_TRUNK_DOMAIN` must be unique in the Twilio account and must end with `.pstn.twilio.com`. If `TWILIO_SIP_TRUNK_SID` is blank, the backend looks for the configured domain and creates the trunk when it does not exist.
 
 The Retell API key used for verification must be the key Retell designates for webhook authentication. Restart or redeploy the backend after changing environment values.
 
@@ -88,12 +116,15 @@ Expected result: HTTP `401` with `Invalid Retell signature`.
 
 ### 3. Confirm the Hampton tenant
 
-In the admin dashboard or database administration tool, locate the intended Hampton Travel account and record its internal user ID privately as `<HAMPTON_USER_ID>`. Confirm all of the following:
+In the admin dashboard or database administration tool, locate the intended Hampton Travel account and record its internal user ID privately as `<HAMPTON_USER_ID>`. If Hampton has not bought a paid plan yet, complete the paid-plan purchase first and let auto-provisioning run. Confirm all of the following:
 
 - status is `Active`;
 - the AI receptionist is `live` or scheduled for the test time;
 - the tenant has one inbound E.164 number;
+- the tenant has a Twilio phone-number SID;
 - the tenant has a Retell agent ID;
+- the Twilio number is attached to the shared Twilio SIP trunk;
+- the number is imported in Retell with the Twilio trunk termination URI;
 - its plan has remaining usage and concurrency;
 - its timezone and weekly schedule are correct;
 - its knowledge base contains a harmless fact with a known expected answer;

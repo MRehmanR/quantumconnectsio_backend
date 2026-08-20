@@ -12,6 +12,12 @@ These workflows are multi-tenant automation workers. The backend remains the sou
 
 Every production Retell request is signature-verified by the backend before tenant data is read or written. n8n jobs carry an explicit tenant envelope and never select a default business.
 
+## Paid-plan phone provisioning
+
+Phone provisioning is owned by the backend because all tenants use the Quantum Connects Twilio account. After a successful paid plan, the backend buys or reuses the tenant's Twilio number, ensures the shared Twilio Elastic SIP trunk, attaches the purchased number SID to that trunk, creates/imports the Retell agent/number, and syncs the live Retell webhooks.
+
+n8n Cloud should be used for the asynchronous workflows below and for regression visibility. Do not configure a production Twilio number to call n8n directly, and do not store Twilio or Retell API keys in workflow JSON.
+
 ## Workflows
 
 | File | Responsibility |

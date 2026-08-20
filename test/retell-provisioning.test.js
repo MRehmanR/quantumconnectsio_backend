@@ -15,6 +15,7 @@ process.env.PUBLIC_API_BASE_URL = 'https://api.example.test/';
 const { sequelize } = require('../src/config/db');
 const {
     buildRetellToolDefinitions,
+    ensureTwilioSipTrunkForNumber,
     syncRetellIntegrationForUser
 } = require('../src/services/provisioning.service');
 const {
@@ -111,6 +112,79 @@ test('provider sync patches only webhooks and merged tools without replacing the
     assert.equal(llmPatch.body.general_tools.some((tool) => tool.name === 'end_call'), true);
     assert.equal(llmPatch.body.general_tools.some((tool) => tool.name === 'tenant_custom_tool'), true);
     assert.equal(llmPatch.body.general_tools.filter((tool) => tool.name === 'book_appointment').length, 1);
+});
+
+test('Twilio SIP trunk setup creates origination and attaches a purchased number', async () => {
+    const calls = [];
+    const request = async (input) => {
+        calls.push(input);
+
+        if (input.method === 'GET' && input.url === 'https://trunking.twilio.com/v1/Trunks?PageSize=100') {
+            return {
+                trunks: [],
+                meta: { next_page_url: null }
+            };
+        }
+
+        if (input.method === 'POST' && input.url === 'https://trunking.twilio.com/v1/Trunks') {
+            return {
+                sid: 'TK_SHARED_TRUNK',
+                domain_name: 'quantumconnects-retell.pstn.twilio.com'
+            };
+        }
+
+        if (input.method === 'GET' && input.url === 'https://trunking.twilio.com/v1/Trunks/TK_SHARED_TRUNK/OriginationUrls?PageSize=100') {
+            return {
+                origination_urls: [],
+                meta: { next_page_url: null }
+            };
+        }
+
+        if (input.method === 'POST' && input.url === 'https://trunking.twilio.com/v1/Trunks/TK_SHARED_TRUNK/OriginationUrls') {
+            return { sid: 'OU_RETELL' };
+        }
+
+        if (input.method === 'GET' && input.url === 'https://trunking.twilio.com/v1/Trunks/TK_SHARED_TRUNK/PhoneNumbers?PageSize=100') {
+            return {
+                phone_numbers: [],
+                meta: { next_page_url: null }
+            };
+        }
+
+        if (input.method === 'POST' && input.url === 'https://trunking.twilio.com/v1/Trunks/TK_SHARED_TRUNK/PhoneNumbers') {
+            return { sid: 'PN_ATTACH' };
+        }
+
+        throw new Error(`Unexpected Twilio request ${input.method} ${input.url}`);
+    };
+
+    const result = await ensureTwilioSipTrunkForNumber({
+        phoneNumber: '+15551234567',
+        phoneNumberSid: 'PN_PURCHASED',
+        config: {
+            accountSid: 'AC_TEST',
+            authToken: 'auth-token',
+            trunkDomain: 'quantumconnects-retell.pstn.twilio.com',
+            trunkFriendlyName: 'Quantum Connects Retell',
+            originationUri: 'sip:sip.retellai.com;transport=tcp'
+        },
+        request
+    });
+
+    assert.equal(result.skipped, false);
+    assert.equal(result.trunkSid, 'TK_SHARED_TRUNK');
+    assert.equal(result.terminationUri, 'quantumconnects-retell.pstn.twilio.com');
+    assert.equal(result.originationConfigured, true);
+    assert.equal(result.phoneNumberAttached, true);
+
+    const trunkCreate = calls.find((entry) => entry.method === 'POST' && entry.url.endsWith('/Trunks'));
+    assert.equal(trunkCreate.params.DomainName, 'quantumconnects-retell.pstn.twilio.com');
+
+    const originationCreate = calls.find((entry) => entry.method === 'POST' && entry.url.endsWith('/OriginationUrls'));
+    assert.equal(originationCreate.params.SipUrl, 'sip:sip.retellai.com;transport=tcp');
+
+    const phoneAttach = calls.find((entry) => entry.method === 'POST' && entry.url.endsWith('/PhoneNumbers'));
+    assert.equal(phoneAttach.params.PhoneNumberSid, 'PN_PURCHASED');
 });
 
 test('dry-run reconciliation performs no provider mutations', async () => {

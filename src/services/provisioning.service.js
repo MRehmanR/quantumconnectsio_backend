@@ -8,6 +8,10 @@ const {
     TWILIO_AUTH_TOKEN,
     TWILIO_NUMBER_COUNTRY,
     TWILIO_AREA_CODE,
+    TWILIO_SIP_TRUNK_SID,
+    TWILIO_SIP_TRUNK_DOMAIN,
+    TWILIO_SIP_TRUNK_FRIENDLY_NAME,
+    TWILIO_SIP_ORIGINATION_URI,
     RETELL_API_KEY,
     RETELL_API_BASE_URL,
     RETELL_CREATE_AGENT_PATH,
@@ -682,6 +686,30 @@ const resolveSipTrunkConfigForImport = async ({ user, phoneNumber }) => {
     return configured;
 };
 
+const ensureSipTrunkConfigForUserNumber = async (user) => {
+    const configured = await resolveSipTrunkConfigForImport({
+        user,
+        phoneNumber: user?.inboundNumber
+    });
+
+    const twilioSipTrunk = await ensureTwilioSipTrunkForNumber({
+        phoneNumber: user?.inboundNumber,
+        phoneNumberSid: user?.twilioPhoneNumberSid
+    });
+
+    const sipTrunkConfig = twilioSipTrunk?.terminationUri
+        ? {
+              ...configured,
+              terminationUri: twilioSipTrunk.terminationUri
+          }
+        : configured;
+
+    return {
+        sipTrunkConfig,
+        twilioSipTrunk
+    };
+};
+
 const requestTwilioForm = ({ method, url, params }) =>
     new Promise((resolve, reject) => {
         const parsed = new URL(url);
@@ -779,6 +807,178 @@ const requestTwilioJson = ({ method, url }) =>
         req.on('error', reject);
         req.end();
     });
+
+const normalizeTwilioSipDomain = (value) => {
+    const raw = String(value || '').trim();
+    return raw.replace(/^sip:/i, '').split(';')[0].replace(/\/$/, '');
+};
+
+const normalizeTwilioSipUrl = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw) {
+        return '';
+    }
+    return raw.startsWith('sip:') ? raw : `sip:${raw}`;
+};
+
+const getTwilioSipTrunkConfig = (overrides = {}) => ({
+    accountSid: String(overrides.accountSid || TWILIO_ACCOUNT_SID || '').trim(),
+    authToken: String(overrides.authToken || TWILIO_AUTH_TOKEN || '').trim(),
+    trunkSid: String(overrides.trunkSid || TWILIO_SIP_TRUNK_SID || '').trim(),
+    trunkDomain: normalizeTwilioSipDomain(overrides.trunkDomain || TWILIO_SIP_TRUNK_DOMAIN || RETELL_SIP_TERMINATION_URI),
+    trunkFriendlyName: String(overrides.trunkFriendlyName || TWILIO_SIP_TRUNK_FRIENDLY_NAME || 'Quantum Connects Retell').trim(),
+    originationUri: normalizeTwilioSipUrl(overrides.originationUri || TWILIO_SIP_ORIGINATION_URI || 'sip:sip.retellai.com;transport=tcp')
+});
+
+const requestTwilioSipApi = async ({ method, url, params }, request) => {
+    if (request) {
+        return request({ method, url, params });
+    }
+
+    if (method === 'GET') {
+        return requestTwilioJson({ method, url });
+    }
+
+    return requestTwilioForm({ method, url, params });
+};
+
+const listTwilioSipCollection = async ({ url, key, request, limit = 20 }) => {
+    const items = [];
+    let nextUrl = url;
+    let pages = 0;
+
+    while (nextUrl && pages < limit) {
+        const response = await requestTwilioSipApi({ method: 'GET', url: nextUrl }, request);
+        const pageItems = Array.isArray(response?.[key]) ? response[key] : [];
+        items.push(...pageItems);
+        nextUrl = response?.meta?.next_page_url || null;
+        pages += 1;
+    }
+
+    return items;
+};
+
+const ensureTwilioSipTrunkForNumber = async ({
+    phoneNumber,
+    phoneNumberSid,
+    config = {},
+    request
+} = {}) => {
+    const resolved = getTwilioSipTrunkConfig(config);
+    const normalizedPhoneNumber = String(phoneNumber || '').trim();
+    const normalizedPhoneSid = String(phoneNumberSid || '').trim();
+
+    if (!normalizedPhoneSid) {
+        return {
+            skipped: true,
+            reason: 'missing_twilio_phone_number_sid'
+        };
+    }
+
+    if (!resolved.accountSid || !resolved.authToken) {
+        return {
+            skipped: true,
+            reason: 'twilio_not_configured'
+        };
+    }
+
+    if (!resolved.trunkSid && !resolved.trunkDomain) {
+        return {
+            skipped: true,
+            reason: 'missing_twilio_sip_trunk_domain'
+        };
+    }
+
+    const baseUrl = 'https://trunking.twilio.com/v1';
+    let trunk = null;
+
+    if (resolved.trunkSid) {
+        trunk = await requestTwilioSipApi({
+            method: 'GET',
+            url: `${baseUrl}/Trunks/${encodeURIComponent(resolved.trunkSid)}`
+        }, request);
+    }
+
+    if (!trunk && resolved.trunkDomain) {
+        const trunks = await listTwilioSipCollection({
+            url: `${baseUrl}/Trunks?PageSize=100`,
+            key: 'trunks',
+            request
+        });
+        trunk = trunks.find((item) => normalizeTwilioSipDomain(item?.domain_name) === resolved.trunkDomain) || null;
+    }
+
+    if (!trunk) {
+        trunk = await requestTwilioSipApi({
+            method: 'POST',
+            url: `${baseUrl}/Trunks`,
+            params: {
+                FriendlyName: resolved.trunkFriendlyName,
+                DomainName: resolved.trunkDomain
+            }
+        }, request);
+    }
+
+    const trunkSid = String(trunk?.sid || resolved.trunkSid || '').trim();
+    const terminationUri = normalizeTwilioSipDomain(trunk?.domain_name || resolved.trunkDomain);
+    if (!trunkSid || !terminationUri) {
+        throw new Error('Twilio SIP trunk setup failed: missing trunk SID or termination URI.');
+    }
+
+    let originationConfigured = false;
+    if (resolved.originationUri) {
+        const originationUrls = await listTwilioSipCollection({
+            url: `${baseUrl}/Trunks/${encodeURIComponent(trunkSid)}/OriginationUrls?PageSize=100`,
+            key: 'origination_urls',
+            request
+        });
+        originationConfigured = originationUrls.some((item) => normalizeTwilioSipUrl(item?.sip_url) === resolved.originationUri);
+
+        if (!originationConfigured) {
+            await requestTwilioSipApi({
+                method: 'POST',
+                url: `${baseUrl}/Trunks/${encodeURIComponent(trunkSid)}/OriginationUrls`,
+                params: {
+                    FriendlyName: 'Retell inbound origination',
+                    SipUrl: resolved.originationUri,
+                    Priority: 10,
+                    Weight: 10,
+                    Enabled: true
+                }
+            }, request);
+            originationConfigured = true;
+        }
+    }
+
+    const trunkPhoneNumbers = await listTwilioSipCollection({
+        url: `${baseUrl}/Trunks/${encodeURIComponent(trunkSid)}/PhoneNumbers?PageSize=100`,
+        key: 'phone_numbers',
+        request
+    });
+    const phoneNumberAttached = trunkPhoneNumbers.some((item) => {
+        const sidMatches = String(item?.sid || item?.phone_number_sid || '').trim() === normalizedPhoneSid;
+        const numberMatches = normalizedPhoneNumber && normalizePhoneDigits(item?.phone_number) === normalizePhoneDigits(normalizedPhoneNumber);
+        return sidMatches || numberMatches;
+    });
+
+    if (!phoneNumberAttached) {
+        await requestTwilioSipApi({
+            method: 'POST',
+            url: `${baseUrl}/Trunks/${encodeURIComponent(trunkSid)}/PhoneNumbers`,
+            params: {
+                PhoneNumberSid: normalizedPhoneSid
+            }
+        }, request);
+    }
+
+    return {
+        skipped: false,
+        trunkSid,
+        terminationUri,
+        originationConfigured,
+        phoneNumberAttached: true
+    };
+};
 
 const isTwilioBundleRequiredError = (error) => {
     const message = String(error?.message || '').toLowerCase();
@@ -1366,15 +1566,17 @@ const provisionRetellAgentForUser = async (userId, options = {}) => {
     const force = Boolean(options?.force);
     const customPrompt = normalizePromptText(options?.customPrompt);
     const baseUrl = String(RETELL_API_BASE_URL || 'https://api.retellai.com').trim().replace(/\/$/, '');
-    const sipTrunkConfig = await resolveSipTrunkConfigForImport({
-        user,
-        phoneNumber: user.inboundNumber
-    });
+    let sipTrunkConfig = null;
+    let twilioSipTrunk = null;
     user.provisioningStatus = 'in_progress';
     user.provisioningError = '';
     await user.save();
 
     try {
+        const sipSetup = await ensureSipTrunkConfigForUserNumber(user);
+        sipTrunkConfig = sipSetup.sipTrunkConfig;
+        twilioSipTrunk = sipSetup.twilioSipTrunk;
+
         if (user.retellAgentId && !force) {
             const liveAgent = await getRetellAgentById({
                 baseUrl,
@@ -1398,7 +1600,8 @@ const provisionRetellAgentForUser = async (userId, options = {}) => {
                     inboundNumber: user.inboundNumber,
                     twilioPhoneNumberSid: user.twilioPhoneNumberSid,
                     retellAgentId: user.retellAgentId,
-                    provisioningStatus: user.provisioningStatus
+                    provisioningStatus: user.provisioningStatus,
+                    twilioSipTrunk
                 };
             }
 
@@ -1467,7 +1670,8 @@ const provisionRetellAgentForUser = async (userId, options = {}) => {
             inboundNumber: user.inboundNumber,
             twilioPhoneNumberSid: user.twilioPhoneNumberSid,
             retellAgentId: user.retellAgentId,
-            provisioningStatus: user.provisioningStatus
+            provisioningStatus: user.provisioningStatus,
+            twilioSipTrunk
         };
     } catch (error) {
         user.provisioningStatus = 'manual_required';
@@ -1556,10 +1760,8 @@ const provisionForUser = async (userId, options = {}) => {
         const autoAssign = Boolean(options?.autoAssign);
         const skipRetell = Boolean(options?.skipRetell);
         const forceTwilioPurchase = Boolean(options?.forceTwilioPurchase);
-        const sipTrunkConfig = await resolveSipTrunkConfigForImport({
-            user,
-            phoneNumber: user.inboundNumber
-        });
+        let sipTrunkConfig = null;
+        let twilioSipTrunk = null;
 
         const twilioAlreadyConfigured = Boolean(user.inboundNumber && user.twilioPhoneNumberSid && !requestedPhoneNumber && !forceTwilioPurchase);
         let twilio = twilioAlreadyConfigured
@@ -1614,6 +1816,12 @@ const provisionForUser = async (userId, options = {}) => {
             });
             user.inboundNumber = twilio.phoneNumber;
             user.twilioPhoneNumberSid = twilio.phoneSid;
+        }
+
+        if (user.inboundNumber) {
+            const sipSetup = await ensureSipTrunkConfigForUserNumber(user);
+            sipTrunkConfig = sipSetup.sipTrunkConfig;
+            twilioSipTrunk = sipSetup.twilioSipTrunk;
         }
 
         const retellAlreadyConfigured = Boolean(user.retellAgentId);
@@ -1702,6 +1910,7 @@ const provisionForUser = async (userId, options = {}) => {
             twilioPhoneNumberSid: user.twilioPhoneNumberSid,
             retellAgentId: user.retellAgentId,
             provisioningStatus: user.provisioningStatus,
+            twilioSipTrunk,
             websiteKnowledgeBase
         };
     } catch (error) {
@@ -1715,6 +1924,7 @@ const provisionForUser = async (userId, options = {}) => {
 module.exports = {
     provisionForUser,
     purchaseTwilioNumber,
+    ensureTwilioSipTrunkForNumber,
     listAvailableNumbersForUser,
     provisionRetellAgentForUser,
     buildRetellToolDefinitions,
