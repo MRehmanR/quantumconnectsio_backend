@@ -1900,6 +1900,22 @@ const createAppointment = async ({ customerName, customerPhone, customerEmail, d
         }
     }
 
+    const availability = await getAppointmentAvailability({
+        date,
+        tenantEmail,
+        dialedNumber,
+        ownerPhone,
+        actor
+    });
+    if (!Array.isArray(availability.availableSlots) || !availability.availableSlots.includes(formattedTime)) {
+        const slotUnavailableError = new Error(
+            availability.inactiveReason || 'Requested time slot is not available within booking hours or notice rules'
+        );
+        slotUnavailableError.code = 'SLOT_UNAVAILABLE';
+        slotUnavailableError.alternatives = (availability.availableSlots || []).slice(0, 5);
+        throw slotUnavailableError;
+    }
+
     const bookedSlotSet = await getBookedSlotSetForDate(date, tenantUser?.id);
     if (bookedSlotSet.has(requestedMinutes)) {
         const allSlots = generateDailySlots({});
@@ -2284,6 +2300,22 @@ const rescheduleAppointment = async ({ appointmentId, date, time, tenantEmail, d
     assertAppointmentNotInPast(date, requestedMinutes);
 
     const formattedTime = formatMinutesToHHmm(requestedMinutes);
+    const availability = await getAppointmentAvailability({
+        date,
+        tenantEmail,
+        dialedNumber,
+        ownerPhone,
+        actor
+    });
+    if (!Array.isArray(availability.availableSlots) || !availability.availableSlots.includes(formattedTime)) {
+        const slotUnavailableError = new Error(
+            availability.inactiveReason || 'Requested time slot is not available within booking hours or notice rules'
+        );
+        slotUnavailableError.code = 'SLOT_UNAVAILABLE';
+        slotUnavailableError.alternatives = (availability.availableSlots || []).slice(0, 5);
+        throw slotUnavailableError;
+    }
+
     const previousStatus = appointment.status;
     await sequelize.transaction(async (transaction) => {
         await User.findByPk(tenantUser.id, {

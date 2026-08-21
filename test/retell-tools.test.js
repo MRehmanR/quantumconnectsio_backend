@@ -200,6 +200,78 @@ test('appointment availability follows the requested weekday schedule and bookin
     await tenantA.save();
 });
 
+test('call booking rejects slots outside tenant booking hours', async () => {
+    const targetDate = dateAfter(40);
+    const weekday = new Intl.DateTimeFormat('en-US', {
+        weekday: 'long',
+        timeZone: 'UTC'
+    }).format(new Date(`${targetDate}T12:00:00.000Z`)).toLowerCase();
+    tenantA.receptionistWeeklySchedule = JSON.stringify([
+        { day: weekday, enabled: true, start: '09:00', end: '11:00' }
+    ]);
+    tenantA.receptionistBookingRules = JSON.stringify({ duration: '30 minutes', buffer: '0 minutes' });
+    await tenantA.save();
+
+    const result = await executeRetellTool(functionRequest('book_appointment', tenantA, {
+        customer_name: 'Outside Hours Caller',
+        customer_phone: caller,
+        date: targetDate,
+        time: '12:00'
+    }, 'call_outside_booking_hours'));
+
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'SLOT_UNAVAILABLE');
+    assert.match(result.message, /available|hours|notice/i);
+    assert.equal(await Appointment.count({
+        where: {
+            userId: tenantA.id,
+            appointmentDate: targetDate,
+            appointmentTime: '12:00',
+            status: { [Op.in]: ['Pending', 'Confirmed'] }
+        }
+    }), 0);
+
+    tenantA.receptionistWeeklySchedule = '[]';
+    tenantA.receptionistBookingRules = '{}';
+    await tenantA.save();
+});
+
+test('call booking rejects slots before the tenant minimum notice window', async () => {
+    const targetDate = dateAfter(1);
+    const weekday = new Intl.DateTimeFormat('en-US', {
+        weekday: 'long',
+        timeZone: 'UTC'
+    }).format(new Date(`${targetDate}T12:00:00.000Z`)).toLowerCase();
+    tenantA.receptionistWeeklySchedule = JSON.stringify([
+        { day: weekday, enabled: true, start: '00:00', end: '23:59' }
+    ]);
+    tenantA.receptionistBookingRules = JSON.stringify({ duration: '30 minutes', buffer: '0 minutes', minNotice: '48 hours' });
+    await tenantA.save();
+
+    const result = await executeRetellTool(functionRequest('book_appointment', tenantA, {
+        customer_name: 'Too Soon Caller',
+        customer_phone: caller,
+        date: targetDate,
+        time: '23:00'
+    }, 'call_min_notice_booking'));
+
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'SLOT_UNAVAILABLE');
+    assert.match(result.message, /available|hours|notice/i);
+    assert.equal(await Appointment.count({
+        where: {
+            userId: tenantA.id,
+            appointmentDate: targetDate,
+            appointmentTime: '23:00',
+            status: { [Op.in]: ['Pending', 'Confirmed'] }
+        }
+    }), 0);
+
+    tenantA.receptionistWeeklySchedule = '[]';
+    tenantA.receptionistBookingRules = '{}';
+    await tenantA.save();
+});
+
 test('business information search cannot return another tenant knowledge', async () => {
     const result = await executeRetellTool(functionRequest(
         'get_business_information',
@@ -295,6 +367,51 @@ test('rescheduling cannot overwrite an occupied tenant slot', async () => {
     assert.equal(source.appointmentTime, '10:00');
 });
 
+test('call rescheduling rejects slots outside tenant booking hours', async () => {
+    const targetDate = dateAfter(41);
+    const weekday = new Intl.DateTimeFormat('en-US', {
+        weekday: 'long',
+        timeZone: 'UTC'
+    }).format(new Date(`${targetDate}T12:00:00.000Z`)).toLowerCase();
+    tenantA.receptionistWeeklySchedule = JSON.stringify([
+        { day: weekday, enabled: true, start: '09:00', end: '11:00' }
+    ]);
+    tenantA.receptionistBookingRules = JSON.stringify({ duration: '30 minutes', buffer: '0 minutes' });
+    await tenantA.save();
+
+    const source = await Appointment.create({
+        userId: tenantA.id,
+        inboundNumber: tenantA.inboundNumber,
+        caller: 'Reschedule Caller',
+        appointmentDate: dateAfter(42),
+        appointmentTime: '10:00',
+        type: 'Consultation',
+        status: 'Confirmed'
+    });
+    await AppointmentContact.create({
+        appointmentId: source.id,
+        name: 'Reschedule Caller',
+        phone: caller,
+        email: 'reschedule@example.test'
+    });
+
+    const result = await executeRetellTool(functionRequest('reschedule_appointment', tenantA, {
+        appointment_id: String(source.id),
+        new_date: targetDate,
+        new_time: '12:00'
+    }, 'call_reschedule_outside_booking_hours'));
+
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'SLOT_UNAVAILABLE');
+    await source.reload();
+    assert.equal(source.appointmentDate, dateAfter(42));
+    assert.equal(source.appointmentTime, '10:00');
+
+    tenantA.receptionistWeeklySchedule = '[]';
+    tenantA.receptionistBookingRules = '{}';
+    await tenantA.save();
+});
+
 test('concurrent booking attempts cannot create two active appointments for one tenant slot', async () => {
     const targetDate = dateAfter(35);
     const attempts = await Promise.allSettled([
@@ -358,6 +475,18 @@ test('booking retries are idempotent and upcoming lookup stays tenant-scoped', a
 });
 
 test('availability, reschedule, and cancel tools reuse tenant appointment rules', async () => {
+    tenantA.receptionistWeeklySchedule = JSON.stringify([
+        { day: 'sunday', enabled: true, start: '09:00', end: '17:00' },
+        { day: 'monday', enabled: true, start: '09:00', end: '17:00' },
+        { day: 'tuesday', enabled: true, start: '09:00', end: '17:00' },
+        { day: 'wednesday', enabled: true, start: '09:00', end: '17:00' },
+        { day: 'thursday', enabled: true, start: '09:00', end: '17:00' },
+        { day: 'friday', enabled: true, start: '09:00', end: '17:00' },
+        { day: 'saturday', enabled: true, start: '09:00', end: '17:00' }
+    ]);
+    tenantA.receptionistBookingRules = JSON.stringify({ duration: '30 minutes', buffer: '0 minutes', minNotice: '0 minutes' });
+    await tenantA.save();
+
     const availability = await executeRetellTool(functionRequest(
         'check_appointment_availability',
         tenantA,
@@ -386,6 +515,10 @@ test('availability, reschedule, and cancel tools reuse tenant appointment rules'
     assert.equal(availability.data.requestedAvailable, true);
     assert.equal(rescheduled.data.appointment.time, '12:00');
     assert.equal(cancelled.data.appointment.status, 'Cancelled');
+
+    tenantA.receptionistWeeklySchedule = '[]';
+    tenantA.receptionistBookingRules = '{}';
+    await tenantA.save();
 });
 
 test('metadata tenant mismatch is rejected even when the called number is valid', async () => {

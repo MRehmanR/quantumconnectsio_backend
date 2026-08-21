@@ -37,7 +37,18 @@ test.before(async () => {
         inboundNumber: '+447700900002',
         timezone: 'Europe/London',
         plan: 'Core',
-        status: 'Active'
+        status: 'Active',
+        receptionistStatus: 'live',
+        receptionistWeeklySchedule: JSON.stringify([
+            { day: 'sunday', enabled: true, start: '09:00', end: '18:00' },
+            { day: 'monday', enabled: true, start: '09:00', end: '18:00' },
+            { day: 'tuesday', enabled: true, start: '09:00', end: '18:00' },
+            { day: 'wednesday', enabled: true, start: '09:00', end: '18:00' },
+            { day: 'thursday', enabled: true, start: '09:00', end: '18:00' },
+            { day: 'friday', enabled: true, start: '09:00', end: '18:00' },
+            { day: 'saturday', enabled: true, start: '09:00', end: '18:00' }
+        ]),
+        receptionistBookingRules: JSON.stringify({ duration: '30 minutes', buffer: '0 minutes', minNotice: '0 minutes' })
     });
     await User.create({
         username: 'n8n-suspended',
