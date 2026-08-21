@@ -68,3 +68,5 @@ After local regression tests pass:
 Retell cannot call localhost or a private address. Use an HTTPS tunnel for the final local canary, then use the permanent public backend URL in production.
 
 For the full provider canary, exact caller script, dashboard verification, pass/fail criteria, and rollback procedure, follow [the real-call testing guide](../../docs/REAL_CALL_TESTING_GUIDE.md).
+
+For local n8n setup and the first Postman workflow test, follow [the n8n local Postman testing guide](../postman/N8N_LOCAL_POSTMAN_TESTING_GUIDE.md).
