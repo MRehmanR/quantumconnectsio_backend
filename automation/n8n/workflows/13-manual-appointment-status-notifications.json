@@ -17,6 +17,7 @@
         220,
         300
       ],
+      "webhookId": "2f2f6bb1-8f17-42e4-8e57-2cc5f2c808d4",
       "credentials": {
         "httpHeaderAuth": {
           "id": "QC_AUTOMATION_KEY_CRED",
@@ -145,6 +146,7 @@
     {
       "parameters": {
         "fromEmail": "={{$vars.QC_NOTIFICATION_FROM_EMAIL || 'no-reply@quantumconnects.local'}}",
+        "toEmail": "={{$json.customerEmail || ''}}",
         "subject": "={{$json.action === 'booked' ? 'Appointment Confirmed' : 'Appointment Status Updated'}}",
         "message": "={{$json.action === 'booked' ? ('Hello ' + ($json.customerName || 'Customer') + ',\\n\\nYour appointment has been confirmed.\\nDate: ' + ($json.appointmentDate || 'N/A') + '\\nTime: ' + ($json.appointmentTime || 'N/A') + '\\nService: ' + ($json.appointmentType || 'Consultation') + '\\n\\nThank you,\\nQuantum Connects') : ('Hello ' + ($json.customerName || 'Customer') + ',\\n\\nYour appointment status has been updated to ' + ($json.status || 'updated') + '.\\nDate: ' + ($json.appointmentDate || 'N/A') + '\\nTime: ' + ($json.appointmentTime || 'N/A') + '\\nService: ' + ($json.appointmentType || 'Consultation') + '\\n\\nThank you,\\nQuantum Connects')}}",
         "options": {}

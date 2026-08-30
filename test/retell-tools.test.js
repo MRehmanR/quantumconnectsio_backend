@@ -414,6 +414,16 @@ test('call rescheduling rejects slots outside tenant booking hours', async () =>
 
 test('concurrent booking attempts cannot create two active appointments for one tenant slot', async () => {
     const targetDate = dateAfter(35);
+    const weekday = new Intl.DateTimeFormat('en-US', {
+        weekday: 'long',
+        timeZone: 'UTC'
+    }).format(new Date(`${targetDate}T12:00:00.000Z`)).toLowerCase();
+    tenantA.receptionistWeeklySchedule = JSON.stringify([
+        { day: weekday, enabled: true, start: '09:00', end: '17:00' }
+    ]);
+    tenantA.receptionistBookingRules = JSON.stringify({ duration: '30 minutes', buffer: '0 minutes' });
+    await tenantA.save();
+
     const attempts = await Promise.allSettled([
         dashboardDataService.createAppointment({
             customerName: 'Concurrent Caller One',
@@ -446,6 +456,10 @@ test('concurrent booking attempts cannot create two active appointments for one 
             status: { [Op.in]: ['Pending', 'Confirmed'] }
         }
     }), 1);
+
+    tenantA.receptionistWeeklySchedule = '[]';
+    tenantA.receptionistBookingRules = '{}';
+    await tenantA.save();
 });
 
 test('booking retries are idempotent and upcoming lookup stays tenant-scoped', async () => {
