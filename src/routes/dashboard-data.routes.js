@@ -25,6 +25,7 @@ router.post('/knowledge-base', authenticate, requireActiveSubscription, dashboar
 router.delete('/knowledge-base/:id', authenticate, requireActiveSubscription, dashboardDataController.deleteKnowledgeBaseEntry);
 router.get('/feature-toggles', authenticate, dashboardDataController.getFeatureToggles);
 router.put('/feature-toggles', authenticate, requireActiveSubscription, dashboardDataController.updateFeatureToggles);
+router.get('/ai-receptionist/voices', authenticate, dashboardDataController.getAiReceptionistVoices);
 router.get('/ai-receptionist/config', authenticate, dashboardDataController.getAiReceptionistConfig);
 router.get('/ai-receptionist/preview-voice', authenticate, requireActiveSubscription, dashboardDataController.previewAiReceptionistVoice);
 router.put('/ai-receptionist/config', authenticate, requireActiveSubscription, dashboardDataController.updateAiReceptionistConfig);

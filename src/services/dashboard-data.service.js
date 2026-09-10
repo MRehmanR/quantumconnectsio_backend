@@ -155,52 +155,7 @@ const requestJson = ({ method, url, headers = {}, body }) =>
         req.end();
     });
 
-const updateRetellAgentVoice = async ({ agentId, voiceId }) => {
-    const apiKey = String(RETELL_API_KEY || '').trim();
-    if (!apiKey) {
-        throw new Error('Retell is missing RETELL_API_KEY. Configure it in backend .env.');
-    }
-
-    const baseUrl = String(RETELL_API_BASE_URL || 'https://api.retellai.com').trim().replace(/\/$/, '');
-    const configuredPath = String(RETELL_UPDATE_AGENT_PATH || '/update-agent').trim();
-    const normalizedConfiguredPath = configuredPath.startsWith('/') ? configuredPath : `/${configuredPath}`;
-
-    const requestPlans = [
-        {
-            method: 'POST',
-            url: `${baseUrl}${normalizedConfiguredPath}`,
-            body: { agent_id: agentId, voice_id: voiceId }
-        },
-        {
-            method: 'PATCH',
-            url: `${baseUrl}/v2/agents/${encodeURIComponent(agentId)}`,
-            body: { voice_id: voiceId }
-        }
-    ];
-
-    let lastError = null;
-    for (const plan of requestPlans) {
-        try {
-            return await requestJson({
-                method: plan.method,
-                url: plan.url,
-                headers: {
-                    Authorization: `Bearer ${apiKey}`
-                },
-                body: plan.body
-            });
-        } catch (error) {
-            lastError = error;
-            const message = String(error?.message || '');
-            const isNotFound = message.includes('HTTP 404') || message.includes('Cannot');
-            if (!isNotFound) {
-                throw error;
-            }
-        }
-    }
-
-    throw lastError || new Error('Failed to update Retell agent voice');
-};
+const { updateVoice: updateRetellAgentVoice } = require('./retell-voices.service');
 
 const ensureSubscriptionPlans = async () => {
     const desiredNames = defaultPlans.map((plan) => plan.name);

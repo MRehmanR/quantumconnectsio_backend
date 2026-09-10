@@ -437,23 +437,22 @@ exports.getAiReceptionistConfig = async (req, res) => {
     }
 };
 
+exports.getAiReceptionistVoices = async (_req, res) => {
+    try {
+        return ok(res, await require('../services/retell-voices.service').listVoices());
+    } catch (error) {
+        return res.status(503).json({ success: false, message: error.message });
+    }
+};
+
 exports.previewAiReceptionistVoice = async (req, res) => {
     try {
-        const voice = String(req.query.voice || '').trim();
-        if (!voice) {
-            return res.status(400).json({ success: false, message: 'voice query param is required' });
-        }
-
-        const { RETELL_API_KEY } = require('../config/env');
-        if (!RETELL_API_KEY) {
-            return res.status(501).json({ success: false, message: 'Voice preview requires RETELL integration enabled on the backend. Configure RETELL_API_KEY in .env.' });
-        }
-
-        // If RETELL is configured we would proxy a TTS preview here.
-        // Implementation depends on Retell's TTS API. For now, return not implemented.
-        return res.status(501).json({ success: false, message: 'Voice preview is not implemented on the server yet.' });
+        const voices = await require('../services/retell-voices.service').listVoices();
+        const voice = voices.find(item => item.id === String(req.query.voice || ''));
+        if (!voice?.previewUrl) return res.status(404).json({ success: false, message: 'A sample is unavailable for this voice.' });
+        return ok(res, { voiceId: voice.id, previewUrl: voice.previewUrl });
     } catch (error) {
-        return res.status(500).json({ success: false, message: 'Failed to generate voice preview' });
+        return res.status(503).json({ success: false, message: error.message });
     }
 };
 
