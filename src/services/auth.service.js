@@ -324,7 +324,7 @@ const authService = {
         user.resetPasswordExpiresAt = expiresAt;
         await user.save();
 
-        const resetUrl = `${FRONTEND_APP_URL}/reset-password?token=${token}&email=${encodeURIComponent(normalizedEmail)}`;
+        const resetUrl = `${String(FRONTEND_APP_URL).trim().replace(/\/+$/, '')}/reset-password?token=${token}&email=${encodeURIComponent(normalizedEmail)}`;
         await sendPasswordResetEmail({ to: normalizedEmail, resetUrl });
 
         return { sent: true, delivery: 'email' };

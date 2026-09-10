@@ -2,27 +2,46 @@ name: Deploy Backend
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: backend-production
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Deploy Backend to EC2
-        uses: appleboy/ssh-action@master
-
+      - name: Deploy and verify backend on EC2
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          PASSWORD_RESET_ENV: ${{ secrets.PASSWORD_RESET_ENV }}
+          DEPLOY_REVISION: ${{ github.sha }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-
+          envs: PASSWORD_RESET_ENV,DEPLOY_REVISION
           script: |
+            set -eu
             cd /var/www/backend/quantumconnectsio_backend
-
-            git pull origin main
-
-            npm install
-
-            pm2 restart backend
+            git fetch origin main
+            if test "$(git rev-parse FETCH_HEAD)" != "$DEPLOY_REVISION"; then
+              echo "Skipping a superseded deployment."
+              exit 0
+            fi
+            # Preserve the server-generated lockfile that blocked earlier pulls.
+            if ! git diff --quiet HEAD -- package-lock.json; then
+              git stash push -m "pre-deploy generated lockfile $(date -u +%Y%m%dT%H%M%SZ)" -- package-lock.json
+            fi
+            git merge --ff-only "$DEPLOY_REVISION"
+            test "$(git rev-parse HEAD)" = "$DEPLOY_REVISION"
+            npm ci --omit=dev
+            npm test
+            node scripts/configure-password-reset.js
+            node scripts/verify-password-reset.js --smtp-only
+            node -e "const env = {...process.env, ...JSON.parse(process.env.PASSWORD_RESET_ENV || '{}')}; delete env.PASSWORD_RESET_ENV; const result = require('node:child_process').spawnSync('pm2', ['restart', 'backend', '--update-env'], {env, stdio: 'inherit'}); process.exit(result.status ?? 1);"
+            node scripts/verify-password-reset.js
+            curl --fail --silent --resolve quantumconnects.io:443:127.0.0.1 https://quantumconnects.io/reset-password -o /dev/null
+            git log -1 --oneline
